@@ -326,11 +326,7 @@ struct StaticLabel : TransparentWidget {
 struct TheReelPeetWidget : ModuleWidget {
   TheReelPeetWidget(TheReelPeet *module) {
     setModule(module);
-#ifdef METAMODULE_BUILTIN
-    setPanel(createPanel("thereelpeet-seq-mm/TheReelPeet.png"));
-#else
     setPanel(createPanel(asset::plugin(pluginInstance, "res/TheReelPeet.svg")));
-#endif
 
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, 0)));
     addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, 0)));

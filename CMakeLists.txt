@@ -33,6 +33,6 @@ create_plugin(
     SOURCE_LIB      thereelpeetseqmm
     SOURCE_ASSETS   ${CMAKE_CURRENT_LIST_DIR}/res
     DESTINATION     ${CMAKE_CURRENT_BINARY_DIR}/out
-    PLUGIN_NAME     thereelpeet-seq-mm
+    PLUGIN_NAME     thereelpeet-seq
     PLUGIN_JSON     ${CMAKE_CURRENT_LIST_DIR}/plugin.json
 )
