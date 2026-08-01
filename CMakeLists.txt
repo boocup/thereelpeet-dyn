@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(TheReelPeetSeqMM LANGUAGES C CXX ASM)
 
 if(NOT "${METAMODULE_SDK_DIR}" STREQUAL "")
     message("METAMODULE_SDK_DIR set by CMake variable ${METAMODULE_SDK_DIR}")
@@ -18,6 +17,8 @@ endif()
 
 include(${METAMODULE_SDK_DIR}/plugin.cmake)
 
+project(TheReelPeetSeqMM LANGUAGES C CXX ASM)
+
 add_library(thereelpeetseqmm STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/plugin.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/TheReelPeet.cpp
@@ -32,6 +33,6 @@ create_plugin(
     SOURCE_LIB      thereelpeetseqmm
     SOURCE_ASSETS   ${CMAKE_CURRENT_LIST_DIR}/res
     DESTINATION     ${CMAKE_CURRENT_BINARY_DIR}/out
-    PLUGIN_NAME     thereelpeet-seq-mm
+    PLUGIN_NAME     thereelpeet-seq
     PLUGIN_JSON     ${CMAKE_CURRENT_LIST_DIR}/plugin.json
 )

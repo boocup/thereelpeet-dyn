@@ -268,11 +268,7 @@ struct LengthDisplay : TransparentWidget {
     if (!value)
       return;
 
-#ifdef METAMODULE_BUILTIN
-    nvgFontFace(args.vg, "sans");
-#else
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-#endif
     nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
     nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
 
@@ -296,11 +292,7 @@ struct BPMDisplay : TransparentWidget {
 
     int bpm = (int)std::round(param->getValue());
 
-#ifdef METAMODULE_BUILTIN
-    nvgFontFace(args.vg, "sans");
-#else
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-#endif
     nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
     nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
 
@@ -315,7 +307,6 @@ struct BPMDisplay : TransparentWidget {
   }
 };
 
-#ifndef METAMODULE_BUILTIN
 struct StaticLabel : TransparentWidget {
   std::string text;
 
@@ -327,7 +318,6 @@ struct StaticLabel : TransparentWidget {
     nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.5f, text.c_str(), nullptr);
   }
 };
-#endif
 
 // =======================
 //   WIDGET LAYOUT
@@ -336,11 +326,7 @@ struct StaticLabel : TransparentWidget {
 struct TheReelPeetWidget : ModuleWidget {
   TheReelPeetWidget(TheReelPeet *module) {
     setModule(module);
-#ifdef METAMODULE_BUILTIN
-    setPanel(createPanel("thereelpeet-seq-mm/TheReelPeet.png"));
-#else
     setPanel(createPanel(asset::plugin(pluginInstance, "res/TheReelPeet.svg")));
-#endif
 
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, 0)));
     addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, 0)));
@@ -421,7 +407,6 @@ struct TheReelPeetWidget : ModuleWidget {
       bpmDispB->box.size = mm2px(Vec(dispW, 11.f));
       addChild(bpmDispB);
 
-#ifndef METAMODULE_BUILTIN
       auto *dynLabelA = new StaticLabel;
       dynLabelA->text = "Dyn";
       dynLabelA->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, dynKnobY + 5.f));
@@ -433,7 +418,6 @@ struct TheReelPeetWidget : ModuleWidget {
       dynLabelB->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, dynKnobY + 5.f));
       dynLabelB->box.size = mm2px(Vec(dispW, 5.f));
       addChild(dynLabelB);
-#endif
     }
   }
 };
