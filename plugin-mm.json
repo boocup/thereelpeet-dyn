@@ -6,7 +6,7 @@
   "MetaModuleDescription": "Dual generative sequencer with probabilistic note holds and drops, per-lane Rise/Fall envelope, and Dynamics knob for evolving melodic motion.",
   "MetaModuleIncludedModules": [
     {
-      "slug": "thereelpeet-seq-mm",
+      "slug": "thereelpeet-seq",
       "name": "TheReelPeet-Dyn",
       "displayName": "TheReelPeet-Dyn"
     }
