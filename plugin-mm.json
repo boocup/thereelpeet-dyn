@@ -9,6 +9,11 @@
       "slug": "thereelpeet-seq",
       "name": "TheReelPeet-Dyn",
       "displayName": "TheReelPeet-Dyn"
+    },
+    {
+      "slug": "thereelpeet-evo",
+      "name": "TheReelPeet-Evo",
+      "displayName": "TheReelPeet-Evo"
     }
   ]
 }

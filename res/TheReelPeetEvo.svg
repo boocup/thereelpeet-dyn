@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="56"
+   height="380"
+   viewBox="0 0 56 380"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg">
+  <defs id="defs1">
+    <linearGradient id="bgGradEvo" x1="0" y1="0" x2="0" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#d0d0d0" id="stopEvo1" />
+      <stop offset="100%" stop-color="#b8b8b8" id="stopEvo2" />
+    </linearGradient>
+  </defs>
+
+  <!-- Main panel background -->
+  <rect id="panel" x="0" y="0" width="56" height="380" fill="url(#bgGradEvo)" />
+
+  <!-- Lane tint (violet, to distinguish from Lane A red / Lane B blue on TheReelPeet) -->
+  <rect x="4" y="12" width="48" height="356" rx="7" ry="7"
+        fill="#8a4ad9" opacity="0.16" stroke="#000000" stroke-opacity="0.08" stroke-width="1" id="lane" />
+
+  <!-- Wordmark: THEREELPEET (black w/ red offset shadow, matching TheReelPeet.svg's treatment) -->
+  <text x="28.4" y="10.4" text-anchor="middle"
+        style="font-size:3.6px;font-family:sans-serif;letter-spacing:0.6px;fill:#ff0000">THEREELPEET</text>
+  <text x="28" y="10" text-anchor="middle"
+        style="font-size:3.6px;font-family:sans-serif;letter-spacing:0.6px;fill:#000000">THEREELPEET</text>
+
+  <!-- Module name -->
+  <text x="28" y="19" text-anchor="middle"
+        style="font-size:6.5px;font-family:sans-serif;font-weight:bold;letter-spacing:0.5px;fill:#280b0b">EVO</text>
+
+  <!-- Control labels — x/y computed from the same mm2px(Vec(x,y)) values used in
+       TheReelPeetEvo.cpp (scale: 1mm = 2.9528px), so these align with the actual
+       widget positions rather than being eyeballed. -->
+  <text x="28" y="99"  text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">Mode</text>
+  <text x="28" y="167" text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">Steps</text>
+  <text x="28" y="201" text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">BPM</text>
+  <text x="28" y="235" text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">Dyn</text>
+  <text x="28" y="269" text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">Drift</text>
+  <text x="28" y="303" text-anchor="middle" style="font-size:4px;font-family:sans-serif;fill:#280b0b">Persist</text>
+  <text x="15" y="331" text-anchor="middle" style="font-size:3.6px;font-family:sans-serif;fill:#280b0b">Rise</text>
+  <text x="41" y="331" text-anchor="middle" style="font-size:3.6px;font-family:sans-serif;fill:#280b0b">Fall</text>
+  <text x="15" y="363" text-anchor="middle" style="font-size:3.6px;font-family:sans-serif;fill:#280b0b">1v/O</text>
+  <text x="41" y="363" text-anchor="middle" style="font-size:3.6px;font-family:sans-serif;fill:#280b0b">Gate</text>
+</svg>

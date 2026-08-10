@@ -19,6 +19,13 @@
       "description": "Dual generative sequencer with probabilistic note holds and drops, per-lane Rise/Fall envelope, and Dynamics knob for evolving melodic motion.",
       "panel": "res/TheReelPeet.svg",
       "tags": ["Sequencer", "Random", "Envelope generator"]
+    },
+    {
+      "slug": "thereelpeet-evo",
+      "name": "TheReelPeet-Evo",
+      "description": "Single-lane genetic-algorithm sequencer. Evolves patterns via elitism, crossover, and mutation (Drift/Persist) instead of flat randomization, for repetition-with-change generative melodies.",
+      "panel": "res/TheReelPeetEvo.svg",
+      "tags": ["Sequencer", "Random", "Envelope generator"]
     }
   ]
 }

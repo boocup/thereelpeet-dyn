@@ -10,6 +10,7 @@ void init(Plugin *p) {
   // Register all models here so that Rack knows what to
   // load and display in the module browser.
   p->addModel(modelTheReelPeet);
+  p->addModel(modelTheReelPeetEvo);
 
   // Other plugin initialization may go here. But a better strategy is to
   // do other initialization on-demand in the module constructor.

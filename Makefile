@@ -4,6 +4,7 @@ FLAGS +=
 
 SOURCES += src/plugin.cpp
 SOURCES += src/TheReelPeet.cpp
+SOURCES += src/TheReelPeetEvo.cpp
 
 DISTRIBUTABLES += res
 # DISTRIBUTABLES += presets
