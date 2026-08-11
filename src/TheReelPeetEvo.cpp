@@ -319,26 +319,26 @@ struct TheReelPeetEvoWidget : ModuleWidget {
 
     // Left-lane Y values match TheReelPeet's Lane A exactly (onY, randY,
     // knobY, stepsDispY, bpmKnobY, bpmDispY, dynKnobY, riseKnobY, outY).
-    const float runY      = 20.f;
-    const float genY      = 32.f;   // was TheReelPeet's Rand-button row
-    const float lengthY   = 48.f;
-    const float dispY     = 52.f;
-    const float bpmY      = 69.f;
-    const float bpmDispY  = 73.f;
-    const float dynY      = 90.f;
-    const float riseFallY = 105.f;
-    const float outY      = 117.f;
+    const float runY      = 22.5f;  // midpoint between TheReelPeet's 20 and the 25 tried before
+    const float lengthY   = 40.f;   // pulled up 8mm total from TheReelPeet's 48
+    const float dispY     = 44.f;
+    const float bpmY      = 61.f;   // pulled up 8mm total from TheReelPeet's 69
+    const float bpmDispY  = 65.f;
+    const float dynY      = 82.f;   // pulled up 8mm total from TheReelPeet's 90
+    const float riseFallY = 105.f;  // matches TheReelPeet's knob position, unchanged
+    const float outY      = 117.f;  // matches TheReelPeet's port position, unchanged
 
-    // Right lane: Drift/Persist moved up to align with the top two knobs
-    // on the left (Length, BPM). Pool switch stays with the Rise/Fall row.
+    // Right lane: Drift/Persist align with the top two knobs on the left
+    // (Length, BPM). Pool aligns with the Rise/Fall row.
     const float driftY    = lengthY;
     const float persistY  = bpmY;
-    const float poolY     = dynY;
+    const float poolY     = riseFallY;
 
     addParam(createParamCentered<LEDButton>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_PARAM));
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
 
-    addParam(createParamCentered<TL1105>(mm2px(Vec(laneXL, genY)), module, TheReelPeetEvo::GENERATE_PARAM));
+    // Gen sits on the right lane, same row as Run on the left.
+    addParam(createParamCentered<TL1105>(mm2px(Vec(laneXR, runY)), module, TheReelPeetEvo::GENERATE_PARAM));
 
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, lengthY)), module, TheReelPeetEvo::LENGTH_PARAM));
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, bpmY)), module, TheReelPeetEvo::BPM_PARAM));
@@ -376,23 +376,27 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         addChild(label);
       };
 
-      addLabel("THEREELPEET", 75.f, 8.5f, 44.f, 8.f);
-      addLabel("EVO", 75.f, 17.f, 30.f, 16.f, true);
+      // "THEREELPEET" itself is now the real wordmark path in the SVG
+      // (see res/TheReelPeetEvo.svg), not drawn here.
+      addLabel("EVO", 75.f, 14.f, 30.f, 16.f, true);
+
+      addLabel("Run", laneXL, runY + 4.f, dispW, 9.f);
+      addLabel("Gen", laneXR, runY + 4.f, dispW, 9.f);
 
       addLabel("Dyn", laneXL, dynY + 6.f, dispW, 9.f);
       addLabel("Drift", laneXR, driftY + 6.f, dispW, 9.f);
       addLabel("Persist", laneXR, persistY + 6.f, dispW, 9.f);
-      addLabel("Pool", laneXR, poolY + 11.f, dispW, 9.f);
-
-      addLabel("Rise", laneXL - cvDX, riseFallY + 5.f, dispW2, 8.f);
-      addLabel("Fall", laneXL + cvDX, riseFallY + 5.f, dispW2, 8.f);
+      addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
+      addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
       addLabel("Gate", laneXL + cvDX, outY + 3.5f, dispW2, 8.f);
 
-      // "2"/"3"/"4" directly under each pool-size light
-      addLabel("2", laneXR - 4.f, poolLightY + 3.5f, 4.f, 7.f);
-      addLabel("3", laneXR, poolLightY + 3.5f, 4.f, 7.f);
-      addLabel("4", laneXR + 4.f, poolLightY + 3.5f, 4.f, 7.f);
+      // "2"/"3"/"4" pulled up close to the lights; "Pool" pushed down below
+      // them so the two rows don't collide.
+      addLabel("2", laneXR - 4.f, poolLightY + 1.5f, 4.f, 7.f);
+      addLabel("3", laneXR, poolLightY + 1.5f, 4.f, 7.f);
+      addLabel("4", laneXR + 4.f, poolLightY + 1.5f, 4.f, 7.f);
+      addLabel("Pool", laneXR, poolLightY + 8.f, dispW, 9.f);
 
       auto *lenDisplay = new EvoLengthDisplay;
       lenDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, dispY));
