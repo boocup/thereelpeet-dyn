@@ -19,20 +19,21 @@ using namespace rack::ui;
 struct TheReelPeetEvo : Module {
   enum ParamId {
     RUN_PARAM,
-    MODE_PARAM,      // 0 = Rnd (classic full randomize), 1 = Evo (genetic)
-    GENERATE_PARAM,  // momentary trigger: one randomize or one generation
+    GENERATE_PARAM,  // momentary trigger: run one generation
     LENGTH_PARAM,
     BPM_PARAM,
     DYNAMICS_PARAM,
     DRIFT_PARAM,
     PERSIST_PARAM,
+    POOL_SIZE_PARAM,   // hidden state, 0/1/2 => pool size 2/3/4; not bound to a visible knob
+    POOL_CYCLE_PARAM,  // momentary button: advances POOL_SIZE_PARAM
     RISE_PARAM,
     FALL_PARAM,
     PARAMS_LEN
   };
   enum InputId { INPUTS_LEN };
   enum OutputId { OUT_OUTPUT, ENV_OUTPUT, OUTPUTS_LEN };
-  enum LightId { RUN_LIGHT, LIGHTS_LEN };
+  enum LightId { RUN_LIGHT, POOL_LIGHT_2, POOL_LIGHT_3, POOL_LIGHT_4, LIGHTS_LEN };
   enum EnvPhase { ENV_IDLE, ENV_ATTACK, ENV_SUSTAIN, ENV_DECAY };
 
   bool running = false;
@@ -50,20 +51,21 @@ struct TheReelPeetEvo : Module {
   float pool[4][16];
   int poolWriteIdx = 0;
 
-  dsp::SchmittTrigger onTrig, genTrig;
+  dsp::SchmittTrigger onTrig, genTrig, poolCycleTrig;
 
   TheReelPeetEvo() {
     config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
     configParam(RUN_PARAM, 0.f, 1.f, 0.f, "Run toggle");
-    configSwitch(MODE_PARAM, 0.f, 1.f, 0.f, "Mode", {"Rnd", "Evo"});
-    configParam(GENERATE_PARAM, 0.f, 1.f, 0.f, "Randomize / Generate");
+    configParam(GENERATE_PARAM, 0.f, 1.f, 0.f, "Generate");
     configParam(LENGTH_PARAM, 2.f, 16.f, 8.f, "Length (2-16 steps)");
     configParam(BPM_PARAM, 1.f, 240.f, 120.f, "BPM", " BPM");
     configParam(DYNAMICS_PARAM, -1.f, 1.f, 0.f,
                 "Dynamics. CW: held gates, CCW: note drops");
     configParam(DRIFT_PARAM, 0.f, 1.f, 0.25f, "Drift (mutation rate)", "%", 0.f, 100.f);
     configParam(PERSIST_PARAM, 0.f, 1.f, 0.75f, "Persist (master stability)", "%", 0.f, 100.f);
+    configSwitch(POOL_SIZE_PARAM, 0.f, 2.f, 2.f, "Pool size", {"2", "3", "4"});
+    configParam(POOL_CYCLE_PARAM, 0.f, 1.f, 0.f, "Cycle pool size");
     configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
     configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
 
@@ -71,6 +73,9 @@ struct TheReelPeetEvo : Module {
     configOutput(ENV_OUTPUT, "Envelope CV (0-10V)");
 
     configLight(RUN_LIGHT, "Running");
+    configLight(POOL_LIGHT_2, "Pool size 2");
+    configLight(POOL_LIGHT_3, "Pool size 3");
+    configLight(POOL_LIGHT_4, "Pool size 4");
 
     for (int i = 0; i < 16; i++) {
       seq[i] = random::uniform() * 5.f;
@@ -79,17 +84,17 @@ struct TheReelPeetEvo : Module {
     }
   }
 
-  void randomizeFull(float *s) {
-    for (int i = 0; i < 16; i++)
-      s[i] = random::uniform() * 5.f;
-  }
-
   // Elitism (seq[] is always parent1) + crossover with a random pool slot
   // + per-step mutation gated by drift. Result goes into the oldest pool
-  // slot (rotating buffer) and may be promoted to seq[] depending on persist.
-  void runGeneration(float drift, float persist) {
-    int p2idx = (int)(random::uniform() * 4.f);
-    if (p2idx > 3) p2idx = 3;
+  // slot (rotating buffer, wrapping within poolSize) and may be promoted
+  // to seq[] depending on persist. poolSize (2/3/4, from the Pool switch)
+  // only changes how many of the 4 backing slots are actively cycled
+  // through — the storage itself stays pool[4][16] either way.
+  void runGeneration(float drift, float persist, int poolSize) {
+    if (poolWriteIdx >= poolSize) poolWriteIdx = 0;
+
+    int p2idx = (int)(random::uniform() * poolSize);
+    if (p2idx >= poolSize) p2idx = poolSize - 1;
 
     int split = 1 + (int)(random::uniform() * 14.f);  // 1..14
 
@@ -102,7 +107,7 @@ struct TheReelPeetEvo : Module {
 
     for (int i = 0; i < 16; i++)
       pool[poolWriteIdx][i] = candidate[i];
-    poolWriteIdx = (poolWriteIdx + 1) % 4;
+    poolWriteIdx = (poolWriteIdx + 1) % poolSize;
 
     if (random::uniform() >= persist) {
       for (int i = 0; i < 16; i++)
@@ -112,16 +117,23 @@ struct TheReelPeetEvo : Module {
 
   void process(const ProcessArgs &args) override {
     len = clamp((int)std::round(params[LENGTH_PARAM].getValue()), 1, 16);
-    bool modeEvo = params[MODE_PARAM].getValue() > 0.5f;
 
     if (onTrig.process(params[RUN_PARAM].getValue()))
       running = !running;
 
+    if (poolCycleTrig.process(params[POOL_CYCLE_PARAM].getValue())) {
+      int idx = (int)std::round(params[POOL_SIZE_PARAM].getValue());
+      idx = (idx + 1) % 3;
+      params[POOL_SIZE_PARAM].setValue((float)idx);
+    }
+    int poolIdx = clamp((int)std::round(params[POOL_SIZE_PARAM].getValue()), 0, 2);
+    lights[POOL_LIGHT_2].setBrightness(poolIdx == 0 ? 1.f : 0.f);
+    lights[POOL_LIGHT_3].setBrightness(poolIdx == 1 ? 1.f : 0.f);
+    lights[POOL_LIGHT_4].setBrightness(poolIdx == 2 ? 1.f : 0.f);
+
     if (genTrig.process(params[GENERATE_PARAM].getValue())) {
-      if (modeEvo)
-        runGeneration(params[DRIFT_PARAM].getValue(), params[PERSIST_PARAM].getValue());
-      else
-        randomizeFull(seq);
+      int poolSize = 2 + poolIdx;
+      runGeneration(params[DRIFT_PARAM].getValue(), params[PERSIST_PARAM].getValue(), poolSize);
     }
 
     float bpm = clamp(params[BPM_PARAM].getValue(), 1.f, 240.f);
@@ -256,6 +268,28 @@ struct EvoBPMDisplay : TransparentWidget {
   }
 };
 
+// Rack's SVG panel loader (nanosvg) doesn't parse <text> elements at all —
+// only path/rect/circle/line/polygon/g. So every static panel label has to
+// be drawn here in C++, not baked into the SVG as <text>. (TheReelPeet.svg
+// works around this by hand-tracing its wordmark/labels into <path> data;
+// this module just draws them at runtime instead, same idea as TheReelPeet's
+// existing "Dyn" StaticLabel widget.)
+struct EvoStaticLabel : TransparentWidget {
+  std::string text;
+  float fontSize = 9.f;
+  bool bold = false;
+
+  void draw(const DrawArgs &args) override {
+    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+    nvgFillColor(args.vg, nvgRGB(0x28, 0x0b, 0x0b));
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFontSize(args.vg, fontSize);
+    if (bold)
+      nvgFontBlur(args.vg, 0.15f);
+    nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.5f, text.c_str(), nullptr);
+  }
+};
+
 // =======================
 //   WIDGET LAYOUT
 // =======================
@@ -274,52 +308,101 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
     addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-    const float laneX = 9.5f;
-    const float cvDX  = 4.5f;
+    // Left "lane" = playback controls, right "lane" = evolution controls.
+    // Purely cosmetic split (mirrors TheReelPeet's dual-lane look) — this
+    // is still one voice/one output, not two independent lanes. Reuses
+    // TheReelPeet's exact laneAX/laneBX/cvDX values so the panel matches
+    // its width (150 = 10HP) and lane geometry precisely.
+    const float laneXL = 14.f;
+    const float laneXR = 36.5f;
+    const float cvDX   = 4.5f;
 
-    const float runY      = 14.f;
-    const float modeY     = 25.5f;
-    const float genY      = 37.f;
-    const float lengthY   = 48.5f;
-    const float dispY     = 52.5f;   // steps display, just below length knob
-    const float bpmY      = 60.f;
-    const float bpmDispY  = 64.f;
-    const float dynY      = 71.5f;
-    const float driftY    = 83.f;
-    const float persistY  = 94.5f;
-    const float riseFallY = 106.f;
-    const float outY      = 117.5f;
+    // Left-lane Y values match TheReelPeet's Lane A exactly (onY, randY,
+    // knobY, stepsDispY, bpmKnobY, bpmDispY, dynKnobY, riseKnobY, outY).
+    const float runY      = 20.f;
+    const float genY      = 32.f;   // was TheReelPeet's Rand-button row
+    const float lengthY   = 48.f;
+    const float dispY     = 52.f;
+    const float bpmY      = 69.f;
+    const float bpmDispY  = 73.f;
+    const float dynY      = 90.f;
+    const float riseFallY = 105.f;
+    const float outY      = 117.f;
 
-    addParam(createParamCentered<LEDButton>(mm2px(Vec(laneX, runY)), module, TheReelPeetEvo::RUN_PARAM));
-    addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneX, runY)), module, TheReelPeetEvo::RUN_LIGHT));
+    // Right lane: Drift/Persist moved up to align with the top two knobs
+    // on the left (Length, BPM). Pool switch stays with the Rise/Fall row.
+    const float driftY    = lengthY;
+    const float persistY  = bpmY;
+    const float poolY     = dynY;
 
-    addParam(createParamCentered<CKSS>(mm2px(Vec(laneX, modeY)), module, TheReelPeetEvo::MODE_PARAM));
-    addParam(createParamCentered<TL1105>(mm2px(Vec(laneX, genY)), module, TheReelPeetEvo::GENERATE_PARAM));
+    addParam(createParamCentered<LEDButton>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_PARAM));
+    addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
 
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneX, lengthY)), module, TheReelPeetEvo::LENGTH_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneX, bpmY)), module, TheReelPeetEvo::BPM_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneX, dynY)), module, TheReelPeetEvo::DYNAMICS_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneX, driftY)), module, TheReelPeetEvo::DRIFT_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneX, persistY)), module, TheReelPeetEvo::PERSIST_PARAM));
+    addParam(createParamCentered<TL1105>(mm2px(Vec(laneXL, genY)), module, TheReelPeetEvo::GENERATE_PARAM));
 
-    addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneX - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
-    addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneX + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, lengthY)), module, TheReelPeetEvo::LENGTH_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, bpmY)), module, TheReelPeetEvo::BPM_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, dynY)), module, TheReelPeetEvo::DYNAMICS_PARAM));
 
-    addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneX - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
-    addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneX + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
+    // Right lane: evolution controls (Drift, Persist, Pool size)
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXR, driftY)), module, TheReelPeetEvo::DRIFT_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXR, persistY)), module, TheReelPeetEvo::PERSIST_PARAM));
+
+    // Pool size: cycling button + 3 state lights underneath (2/3/4)
+    addParam(createParamCentered<TL1105>(mm2px(Vec(laneXR, poolY)), module, TheReelPeetEvo::POOL_CYCLE_PARAM));
+    const float poolLightY = poolY + 7.f;
+    addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(laneXR - 4.f, poolLightY)), module, TheReelPeetEvo::POOL_LIGHT_2));
+    addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(laneXR, poolLightY)), module, TheReelPeetEvo::POOL_LIGHT_3));
+    addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(laneXR + 4.f, poolLightY)), module, TheReelPeetEvo::POOL_LIGHT_4));
+
+    addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
+    addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
+
+    addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
+    addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
 
     if (module) {
       const float dispW = 12.f;
+      const float dispW2 = 8.f;  // narrower, for the closely-paired labels
+
+      auto addLabel = [&](const std::string &text, float x, float y, float w,
+                           float fontSize, bool bold = false) {
+        auto *label = new EvoStaticLabel;
+        label->text = text;
+        label->fontSize = fontSize;
+        label->bold = bold;
+        label->box.pos = mm2px(Vec(x - w * 0.5f, y));
+        label->box.size = mm2px(Vec(w, 5.f));
+        addChild(label);
+      };
+
+      addLabel("THEREELPEET", 75.f, 8.5f, 44.f, 8.f);
+      addLabel("EVO", 75.f, 17.f, 30.f, 16.f, true);
+
+      addLabel("Dyn", laneXL, dynY + 6.f, dispW, 9.f);
+      addLabel("Drift", laneXR, driftY + 6.f, dispW, 9.f);
+      addLabel("Persist", laneXR, persistY + 6.f, dispW, 9.f);
+      addLabel("Pool", laneXR, poolY + 11.f, dispW, 9.f);
+
+      addLabel("Rise", laneXL - cvDX, riseFallY + 5.f, dispW2, 8.f);
+      addLabel("Fall", laneXL + cvDX, riseFallY + 5.f, dispW2, 8.f);
+      addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
+      addLabel("Gate", laneXL + cvDX, outY + 3.5f, dispW2, 8.f);
+
+      // "2"/"3"/"4" directly under each pool-size light
+      addLabel("2", laneXR - 4.f, poolLightY + 3.5f, 4.f, 7.f);
+      addLabel("3", laneXR, poolLightY + 3.5f, 4.f, 7.f);
+      addLabel("4", laneXR + 4.f, poolLightY + 3.5f, 4.f, 7.f);
 
       auto *lenDisplay = new EvoLengthDisplay;
-      lenDisplay->box.pos = mm2px(Vec(laneX - dispW * 0.5f, dispY));
+      lenDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, dispY));
       lenDisplay->box.size = mm2px(Vec(dispW, 11.f));
       lenDisplay->value = &module->len;
       addChild(lenDisplay);
 
       auto *bpmDisplay = new EvoBPMDisplay();
       bpmDisplay->param = &module->params[TheReelPeetEvo::BPM_PARAM];
-      bpmDisplay->box.pos = mm2px(Vec(laneX - dispW * 0.5f, bpmDispY));
+      bpmDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, bpmDispY));
       bpmDisplay->box.size = mm2px(Vec(dispW, 11.f));
       addChild(bpmDisplay);
     }
