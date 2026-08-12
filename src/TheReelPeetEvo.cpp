@@ -10,21 +10,30 @@ using namespace rack::ui;
 //
 // Single-lane genetic-algorithm variant of TheReelPeet. Playback (Dyn
 // hold/drop probability, AR envelope via Rise/Fall) reuses the same
-// mechanism as TheReelPeet::processLane, just for one lane. What differs
-// is how seq[] gets its content: instead of a flat randomize(), a
-// candidate pool evolves it via elitism + crossover + mutation, gated by
-// Drift (mutation rate) and Persist (probability the master pattern is
-// NOT replaced by a new candidate).
+// mechanism as TheReelPeet::processLane, just for one lane.
+//
+// Phrase-cycling design: pool[4][16] is now the live playback content, not
+// hidden background storage. On genesis (Run off->on transition, or a Gen
+// press at any time) a fresh master[16] is randomized, and each active
+// pool slot is derived from it (drift-gated per-step variation) — this is
+// the "genesis" connection all phrases share. Playback then cycles through
+// the active pool slots, each held for Phrase Duration seconds. Once a
+// full run-through of the pool completes, every active phrase evolves
+// independently — elitism (its own current content) crossed with a random
+// other active phrase, drift-gated mutation, persist-gated replacement —
+// same genetic mechanism as before, just applied per-phrase instead of to
+// one global master.
 
 struct TheReelPeetEvo : Module {
   enum ParamId {
     RUN_PARAM,
-    GENERATE_PARAM,  // momentary trigger: run one generation
+    GENERATE_PARAM,  // momentary trigger: re-run genesis (same as Run off->on)
     LENGTH_PARAM,
     BPM_PARAM,
     DYNAMICS_PARAM,
     DRIFT_PARAM,
     PERSIST_PARAM,
+    PHRASE_DURATION_PARAM,
     POOL_SIZE_PARAM,   // hidden state, 0/1/2 => pool size 2/3/4; not bound to a visible knob
     POOL_CYCLE_PARAM,  // momentary button: advances POOL_SIZE_PARAM
     RISE_PARAM,
@@ -47,9 +56,10 @@ struct TheReelPeetEvo : Module {
   int envPhase = ENV_IDLE;
   int len = 8;
 
-  float seq[16];
+  float master[16];
   float pool[4][16];
-  int poolWriteIdx = 0;
+  int currentPhraseIdx = 0;
+  float phraseTimer = 0.f;
 
   dsp::SchmittTrigger onTrig, genTrig, poolCycleTrig;
 
@@ -57,13 +67,14 @@ struct TheReelPeetEvo : Module {
     config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
     configParam(RUN_PARAM, 0.f, 1.f, 0.f, "Run toggle");
-    configParam(GENERATE_PARAM, 0.f, 1.f, 0.f, "Generate");
+    configParam(GENERATE_PARAM, 0.f, 1.f, 0.f, "Gen (re-run genesis)");
     configParam(LENGTH_PARAM, 2.f, 16.f, 8.f, "Length (2-16 steps)");
     configParam(BPM_PARAM, 1.f, 240.f, 120.f, "BPM", " BPM");
     configParam(DYNAMICS_PARAM, -1.f, 1.f, 0.f,
                 "Dynamics. CW: held gates, CCW: note drops");
     configParam(DRIFT_PARAM, 0.f, 1.f, 0.25f, "Drift (mutation rate)", "%", 0.f, 100.f);
-    configParam(PERSIST_PARAM, 0.f, 1.f, 0.75f, "Persist (master stability)", "%", 0.f, 100.f);
+    configParam(PERSIST_PARAM, 0.f, 1.f, 0.75f, "Persist (per-phrase stability)", "%", 0.f, 100.f);
+    configParam(PHRASE_DURATION_PARAM, 6.f, 60.f, 20.f, "Phrase duration", " s");
     configSwitch(POOL_SIZE_PARAM, 0.f, 2.f, 2.f, "Pool size", {"2", "3", "4"});
     configParam(POOL_CYCLE_PARAM, 0.f, 1.f, 0.f, "Cycle pool size");
     configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
@@ -77,49 +88,58 @@ struct TheReelPeetEvo : Module {
     configLight(POOL_LIGHT_3, "Pool size 3");
     configLight(POOL_LIGHT_4, "Pool size 4");
 
-    for (int i = 0; i < 16; i++) {
-      seq[i] = random::uniform() * 5.f;
-      for (int p = 0; p < 4; p++)
-        pool[p][i] = random::uniform() * 5.f;
-    }
+    genesis(0.25f);
   }
 
-  // Elitism (seq[] is always parent1) + crossover with a random pool slot
-  // + per-step mutation gated by drift. Result goes into the oldest pool
-  // slot (rotating buffer, wrapping within poolSize) and may be promoted
-  // to seq[] depending on persist. poolSize (2/3/4, from the Pool switch)
-  // only changes how many of the 4 backing slots are actively cycled
-  // through — the storage itself stays pool[4][16] either way.
-  void runGeneration(float drift, float persist, int poolSize) {
-    if (poolWriteIdx >= poolSize) poolWriteIdx = 0;
-
-    int p2idx = (int)(random::uniform() * poolSize);
-    if (p2idx >= poolSize) p2idx = poolSize - 1;
-
-    int split = 1 + (int)(random::uniform() * 14.f);  // 1..14
-
-    float candidate[16];
-    for (int i = 0; i < 16; i++) {
-      candidate[i] = (i < split) ? seq[i] : pool[p2idx][i];
-      if (random::uniform() < drift)
-        candidate[i] = random::uniform() * 5.f;
-    }
-
+  // Genesis: fresh random master, then each of the 4 backing pool slots is
+  // derived from it (drift-gated per-step variation from the master, not a
+  // flat copy) — this is the one point where all phrases share common DNA.
+  void genesis(float drift) {
     for (int i = 0; i < 16; i++)
-      pool[poolWriteIdx][i] = candidate[i];
-    poolWriteIdx = (poolWriteIdx + 1) % poolSize;
-
-    if (random::uniform() >= persist) {
+      master[i] = random::uniform() * 5.f;
+    for (int p = 0; p < 4; p++) {
       for (int i = 0; i < 16; i++)
-        seq[i] = candidate[i];
+        pool[p][i] = (random::uniform() < drift) ? random::uniform() * 5.f : master[i];
+    }
+    currentPhraseIdx = 0;
+    phraseTimer = 0.f;
+  }
+
+  // Fires once per full run-through of the active pool. Each active phrase
+  // evolves from ITS OWN current content (elitism) crossed with a random
+  // other active phrase, gated by drift (mutation) and persist (whether it
+  // actually gets replaced). Candidates are computed from a snapshot of the
+  // pool before any writes happen, so every phrase's crossover partner is
+  // last round's content, not a partially-updated mix.
+  void evolveAllPhrases(float drift, float persist, int poolSize) {
+    float candidates[4][16];
+    for (int p = 0; p < poolSize; p++) {
+      int partner = (int)(random::uniform() * poolSize);
+      if (partner >= poolSize) partner = poolSize - 1;
+      int split = 1 + (int)(random::uniform() * 14.f);  // 1..14
+      for (int i = 0; i < 16; i++) {
+        candidates[p][i] = (i < split) ? pool[p][i] : pool[partner][i];
+        if (random::uniform() < drift)
+          candidates[p][i] = random::uniform() * 5.f;
+      }
+    }
+    for (int p = 0; p < poolSize; p++) {
+      if (random::uniform() >= persist) {
+        for (int i = 0; i < 16; i++)
+          pool[p][i] = candidates[p][i];
+      }
     }
   }
 
   void process(const ProcessArgs &args) override {
     len = clamp((int)std::round(params[LENGTH_PARAM].getValue()), 1, 16);
 
+    bool wasRunning = running;
     if (onTrig.process(params[RUN_PARAM].getValue()))
       running = !running;
+
+    float drift = params[DRIFT_PARAM].getValue();
+    float persist = params[PERSIST_PARAM].getValue();
 
     if (poolCycleTrig.process(params[POOL_CYCLE_PARAM].getValue())) {
       int idx = (int)std::round(params[POOL_SIZE_PARAM].getValue());
@@ -130,17 +150,20 @@ struct TheReelPeetEvo : Module {
     lights[POOL_LIGHT_2].setBrightness(poolIdx == 0 ? 1.f : 0.f);
     lights[POOL_LIGHT_3].setBrightness(poolIdx == 1 ? 1.f : 0.f);
     lights[POOL_LIGHT_4].setBrightness(poolIdx == 2 ? 1.f : 0.f);
+    int poolSize = 2 + poolIdx;
+    if (currentPhraseIdx >= poolSize) currentPhraseIdx = 0;
 
-    if (genTrig.process(params[GENERATE_PARAM].getValue())) {
-      int poolSize = 2 + poolIdx;
-      runGeneration(params[DRIFT_PARAM].getValue(), params[PERSIST_PARAM].getValue(), poolSize);
-    }
+    bool genPressed = genTrig.process(params[GENERATE_PARAM].getValue());
+    bool justStarted = running && !wasRunning;
+    if (genPressed || justStarted)
+      genesis(drift);
 
     float bpm = clamp(params[BPM_PARAM].getValue(), 1.f, 240.f);
     const float stepTime = 60.f / bpm;
     float riseTime = params[RISE_PARAM].getValue();
     float fallTime = params[FALL_PARAM].getValue();
     float dynamics = params[DYNAMICS_PARAM].getValue();
+    float phraseDuration = params[PHRASE_DURATION_PARAM].getValue();
 
     float outCV = 0.f;
 
@@ -154,6 +177,16 @@ struct TheReelPeetEvo : Module {
     }
 
     if (running) {
+      phraseTimer += args.sampleTime;
+      if (phraseTimer >= phraseDuration) {
+        phraseTimer -= phraseDuration;
+        currentPhraseIdx++;
+        if (currentPhraseIdx >= poolSize) {
+          currentPhraseIdx = 0;
+          evolveAllPhrases(drift, persist, poolSize);
+        }
+      }
+
       timer += args.sampleTime;
       if (timer >= stepTime) {
         timer -= stepTime;
@@ -168,7 +201,7 @@ struct TheReelPeetEvo : Module {
           if (dynVal > 0.f && random::uniform() < dynCurved) {
             float jitter = 1.f + (random::uniform() * 0.2f - 0.1f);
             holdTimer = riseTime + len * stepTime * jitter;
-            heldCV = seq[step];
+            heldCV = pool[currentPhraseIdx][step];
             envPhase = ENV_ATTACK;
           } else if (dynVal < 0.f && random::uniform() < dynCurved) {
             stepMuted = true;
@@ -176,7 +209,7 @@ struct TheReelPeetEvo : Module {
             envPhase = ENV_IDLE;
           } else {
             trigTimer = 0.01f;
-            heldCV = seq[step];
+            heldCV = pool[currentPhraseIdx][step];
             envPhase = ENV_ATTACK;
           }
         }
@@ -190,6 +223,7 @@ struct TheReelPeetEvo : Module {
       stepMuted = false;
       envLevel = 0.f;
       envPhase = ENV_IDLE;
+      phraseTimer = 0.f;
     }
 
     if (envPhase == ENV_ATTACK) {
@@ -344,9 +378,10 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, bpmY)), module, TheReelPeetEvo::BPM_PARAM));
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, dynY)), module, TheReelPeetEvo::DYNAMICS_PARAM));
 
-    // Right lane: evolution controls (Drift, Persist, Pool size)
+    // Right lane: evolution controls (Drift, Persist, Phrase duration, Pool size)
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXR, driftY)), module, TheReelPeetEvo::DRIFT_PARAM));
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXR, persistY)), module, TheReelPeetEvo::PERSIST_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXR, dynY)), module, TheReelPeetEvo::PHRASE_DURATION_PARAM));
 
     // Pool size: cycling button + 3 state lights underneath (2/3/4)
     addParam(createParamCentered<TL1105>(mm2px(Vec(laneXR, poolY)), module, TheReelPeetEvo::POOL_CYCLE_PARAM));
@@ -384,6 +419,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addLabel("Gen", laneXR, runY + 4.f, dispW, 9.f);
 
       addLabel("Dyn", laneXL, dynY + 6.f, dispW, 9.f);
+      addLabel("Phrase L", laneXR, dynY + 6.f, dispW, 9.f);
       addLabel("Drift", laneXR, driftY + 6.f, dispW, 9.f);
       addLabel("Persist", laneXR, persistY + 6.f, dispW, 9.f);
       addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
