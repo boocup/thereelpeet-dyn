@@ -42,7 +42,8 @@ struct TheReelPeetEvo : Module {
     DRIFT_PARAM = ACTIVE_PARAM + 4,      // DRIFT_PARAM + 0..3
     PERSIST_PARAM = DRIFT_PARAM + 4,     // PERSIST_PARAM + 0..3
     PHRASE_L_PARAM = PERSIST_PARAM + 4,  // PHRASE_L_PARAM + 0..3
-    PARAMS_LEN = PHRASE_L_PARAM + 4
+    RECALL_PARAM = PHRASE_L_PARAM + 4,   // RECALL_PARAM + 0..3
+    PARAMS_LEN = RECALL_PARAM + 4
   };
   enum InputId { INPUTS_LEN };
   enum OutputId { OUT_OUTPUT, ENV_OUTPUT, OUTPUTS_LEN };
@@ -66,9 +67,11 @@ struct TheReelPeetEvo : Module {
 
   float master[16];
   float pool[4][16];
+  float poolGenesis[4][16];  // frozen snapshot of each phrase at genesis/reseed time, for Recall
   bool phraseActive[4] = {true, true, true, true};
   float blinkPhase = 0.f;  // drives the currently-playing light's pulse; independent of Phrase Duration
   int currentPhraseIdx = 0;
+  bool usingGenesisNow = false;  // this playthrough's Recall roll for currentPhraseIdx
   float phraseTimer = 0.f;
   int phrasesPlayedThisRound = 0;
 
@@ -92,6 +95,9 @@ struct TheReelPeetEvo : Module {
       configParam(DRIFT_PARAM + p, 0.f, 1.f, 0.25f, "Phrase " + n + " drift (mutation rate)", "%", 0.f, 100.f);
       configParam(PERSIST_PARAM + p, 0.f, 1.f, 0.75f, "Phrase " + n + " persist (stability)", "%", 0.f, 100.f);
       configParam(PHRASE_L_PARAM + p, 6.f, 60.f, 20.f, "Phrase " + n + " duration", " s");
+      configParam(RECALL_PARAM + p, 0.f, 1.f, 0.f,
+                  "Phrase " + n + " recall (chance of playing the genesis snapshot instead of current)",
+                  "%", 0.f, 100.f);
       configLight(ACTIVE_LIGHT + p, "Phrase " + n + " active");
     }
 
@@ -112,13 +118,14 @@ struct TheReelPeetEvo : Module {
     for (int p = 0; p < 4; p++)
       reseedPhrase(p);
 
-    currentPhraseIdx = 0;
+    int firstActive = 0;
     for (int p = 0; p < 4; p++) {
       if (phraseActive[p]) {
-        currentPhraseIdx = p;
+        firstActive = p;
         break;
       }
     }
+    selectPhrase(firstActive);
     phraseTimer = 0.f;
     phrasesPlayedThisRound = 0;
   }
@@ -126,11 +133,28 @@ struct TheReelPeetEvo : Module {
   // Re-derives a single phrase from the current master (not a fresh one),
   // gated by that phrase's own drift. Used both by genesis() and when a
   // phrase's Active toggle goes off->on, so phrases activated later still
-  // share the same lineage as those already playing.
+  // share the same lineage as those already playing. The result is also
+  // saved as that phrase's Recall snapshot.
   void reseedPhrase(int p) {
     float driftP = params[DRIFT_PARAM + p].getValue();
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < 16; i++) {
       pool[p][i] = (random::uniform() < driftP) ? random::uniform() * 5.f : master[i];
+      poolGenesis[p][i] = pool[p][i];
+    }
+  }
+
+  // Makes idx the currently-playing phrase and rolls its Recall check for
+  // this playthrough: at Recall=1 this always picks the frozen genesis
+  // snapshot (evolution keeps happening in the background, you just never
+  // hear it); at Recall=0 it always plays the current evolved content.
+  // Does NOT touch phraseTimer - callers that need a hard reset (genesis,
+  // jumping because the current phrase went inactive) do that themselves;
+  // the normal round-advance path preserves the remainder instead of
+  // zeroing it, to avoid timing drift.
+  void selectPhrase(int idx) {
+    currentPhraseIdx = idx;
+    float recallP = params[RECALL_PARAM + idx].getValue();
+    usingGenesisNow = random::uniform() < recallP;
   }
 
   int findNextActivePhrase(int fromIdx) {
@@ -201,7 +225,7 @@ struct TheReelPeetEvo : Module {
     if (!phraseActive[currentPhraseIdx]) {
       int next = findNextActivePhrase(currentPhraseIdx);
       if (next != currentPhraseIdx) {
-        currentPhraseIdx = next;
+        selectPhrase(next);
         phraseTimer = 0.f;
       }
     }
@@ -233,7 +257,7 @@ struct TheReelPeetEvo : Module {
         phraseTimer += args.sampleTime;
         if (phraseTimer >= phraseDuration) {
           phraseTimer -= phraseDuration;
-          currentPhraseIdx = findNextActivePhrase(currentPhraseIdx);
+          selectPhrase(findNextActivePhrase(currentPhraseIdx));
           phrasesPlayedThisRound++;
           if (phrasesPlayedThisRound >= activeCount) {
             phrasesPlayedThisRound = 0;
@@ -251,12 +275,13 @@ struct TheReelPeetEvo : Module {
         trigTimer = 0.f;
 
         if (holdTimer <= 0.f && envPhase == ENV_IDLE) {
+          const float *playingSeq = usingGenesisNow ? poolGenesis[currentPhraseIdx] : pool[currentPhraseIdx];
           const float dynVal = clamp(dynamics, -1.f, 1.f);
           const float dynCurved = dynVal * dynVal * std::abs(dynVal);
           if (dynVal > 0.f && random::uniform() < dynCurved) {
             float jitter = 1.f + (random::uniform() * 0.2f - 0.1f);
             holdTimer = riseTime + len * stepTime * jitter;
-            heldCV = pool[currentPhraseIdx][step];
+            heldCV = playingSeq[step];
             envPhase = ENV_ATTACK;
           } else if (dynVal < 0.f && random::uniform() < dynCurved) {
             stepMuted = true;
@@ -264,7 +289,7 @@ struct TheReelPeetEvo : Module {
             envPhase = ENV_IDLE;
           } else {
             trigTimer = 0.01f;
-            heldCV = pool[currentPhraseIdx][step];
+            heldCV = playingSeq[step];
             envPhase = ENV_ATTACK;
           }
         }
@@ -451,6 +476,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float driftY  = lengthY;
     const float persistY = bpmY;
     const float phraseLY = dynY;
+    const float recallY  = phraseLY + 21.f;  // continues the ~21mm row spacing pattern
 
     addParam(createParamCentered<LEDButton>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_PARAM));
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
@@ -472,6 +498,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(colX[p], driftY)), module, TheReelPeetEvo::DRIFT_PARAM + p));
       addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(colX[p], persistY)), module, TheReelPeetEvo::PERSIST_PARAM + p));
       addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(colX[p], phraseLY)), module, TheReelPeetEvo::PHRASE_L_PARAM + p));
+      addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(colX[p], recallY)), module, TheReelPeetEvo::RECALL_PARAM + p));
     }
 
     if (module) {
@@ -505,6 +532,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         addLabel("Drift", colX[p], driftY + 6.f, dispW, 9.f);
         addLabel("Persist", colX[p], persistY + 6.f, dispW, 9.f);
         addLabel(phraseLLabel, colX[p], phraseLY + 6.f, dispW, 9.f);
+        addLabel("Recall", colX[p], recallY + 6.f, dispW, 9.f);
       }
 
       auto *lenDisplay = new EvoLengthDisplay;
