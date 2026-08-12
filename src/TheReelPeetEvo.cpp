@@ -67,6 +67,7 @@ struct TheReelPeetEvo : Module {
   float master[16];
   float pool[4][16];
   bool phraseActive[4] = {true, true, true, true};
+  float blinkPhase = 0.f;  // drives the currently-playing light's pulse; independent of Phrase Duration
   int currentPhraseIdx = 0;
   float phraseTimer = 0.f;
   int phrasesPlayedThisRound = 0;
@@ -280,20 +281,20 @@ struct TheReelPeetEvo : Module {
       phraseTimer = 0.f;
     }
 
-    // Active-light brightness: off = deactivated, dim = active but waiting
-    // its turn, climbing from dim to full over the currently-playing
-    // phrase's own Phrase Duration. Confirmed working on real hardware;
-    // 0.15 dim floor was hard to see on the device screen, bumped to 0.35.
+    // Active-light brightness: off = deactivated, steady = active but
+    // waiting its turn, pulsing = currently playing. A brightness climb
+    // tied to Phrase Duration (up to 60s) turned out too slow to read at
+    // a glance - a fixed-rate pulse (independent of Phrase Duration) is
+    // far more perceptible on the hardware screen.
+    const float blinkRateHz = 2.5f;
+    blinkPhase += args.sampleTime * blinkRateHz;
+    if (blinkPhase > 1.f) blinkPhase -= std::floor(blinkPhase);
+    float pulse = 0.5f + 0.5f * std::sin(6.28318530718f * blinkPhase);
+
     for (int p = 0; p < 4; p++) {
       float brightness = 0.f;
       if (phraseActive[p]) {
-        if (p == currentPhraseIdx) {
-          float pd = params[PHRASE_L_PARAM + p].getValue();
-          float progress = (pd > 0.001f) ? clamp(phraseTimer / pd, 0.f, 1.f) : 1.f;
-          brightness = 0.35f + 0.65f * progress;
-        } else {
-          brightness = 0.35f;
-        }
+        brightness = (p == currentPhraseIdx) ? (0.4f + 0.6f * pulse) : 0.4f;
       }
       lights[ACTIVE_LIGHT + p].setBrightness(brightness);
     }
