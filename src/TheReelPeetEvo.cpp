@@ -280,13 +280,21 @@ struct TheReelPeetEvo : Module {
       phraseTimer = 0.f;
     }
 
-    // Active-light brightness now reflects three states, not just on/off:
-    // full = active and currently playing, dim = active but waiting its
-    // turn in the cycle, off = deactivated.
+    // Active-light brightness: off = deactivated, dim = active but waiting
+    // its turn, climbing from dim to full over the currently-playing
+    // phrase's own Phrase Duration. Confirmed working on real hardware;
+    // 0.15 dim floor was hard to see on the device screen, bumped to 0.35.
     for (int p = 0; p < 4; p++) {
       float brightness = 0.f;
-      if (phraseActive[p])
-        brightness = (p == currentPhraseIdx) ? 1.f : 0.15f;
+      if (phraseActive[p]) {
+        if (p == currentPhraseIdx) {
+          float pd = params[PHRASE_L_PARAM + p].getValue();
+          float progress = (pd > 0.001f) ? clamp(phraseTimer / pd, 0.f, 1.f) : 1.f;
+          brightness = 0.35f + 0.65f * progress;
+        } else {
+          brightness = 0.35f;
+        }
+      }
       lights[ACTIVE_LIGHT + p].setBrightness(brightness);
     }
 
