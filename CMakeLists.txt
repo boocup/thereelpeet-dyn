@@ -30,9 +30,15 @@ target_include_directories(thereelpeetseqmm PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
 )
 
+# MetaModule renders PNG only, never SVG, at runtime. Per the plugin SDK's
+# own docs (docs/graphics.md): the MetaModule Rack adaptor rewrites any
+# "res/X.svg" load call to "X.png" and looks for it in the plugin's bundled
+# assets — so this build's SOURCE_ASSETS points at assets/ (PNGs, generated
+# via scripts/SvgToPng.py from res/), not res/ itself. The VCV build
+# (Makefile) still uses res/ directly, since desktop Rack does render SVG.
 create_plugin(
     SOURCE_LIB      thereelpeetseqmm
-    SOURCE_ASSETS   ${CMAKE_CURRENT_LIST_DIR}/res
+    SOURCE_ASSETS   ${CMAKE_CURRENT_LIST_DIR}/assets
     DESTINATION     ${CMAKE_CURRENT_BINARY_DIR}/out
     PLUGIN_NAME     thereelpeet-seq
     PLUGIN_JSON     ${CMAKE_CURRENT_LIST_DIR}/plugin.json
