@@ -51,14 +51,9 @@ using namespace rack::ui;
 // random other active phrase, drift-gated mutation, persist-gated
 // replacement (its own Entropy, not a shared one).
 //
-// Each phrase also has a Mutate display (see EvoMutationDisplay): the
-// instant that phrase's pool actually gets replaced (persist check
-// passing), it briefly overlays the old shape (faded) against the new one
-// (bold) - a real before/after of the mutation, not just an on/off event
-// light - then fades back to blank. A single 16-point line survives being
-// squeezed into a narrow column far better than the discrete bar-graph
-// this replaced, and only appearing during a real event means it's never
-// showing stale detail to misread.
+// Each phrase also has a Drift light: it flashes red the instant that
+// phrase's pool actually gets replaced (persist check passing), then
+// decays like a hardware peak/clip LED (see mutationFlash).
 
 struct TheReelPeetEvo : Module {
   enum ParamId {
@@ -79,7 +74,8 @@ struct TheReelPeetEvo : Module {
     RUN_LIGHT,
     ACTIVE_LIGHT,                      // ACTIVE_LIGHT + 0..3
     RECALL_LIGHT = ACTIVE_LIGHT + 4,   // RECALL_LIGHT + 0..3
-    LIGHTS_LEN = RECALL_LIGHT + 4
+    DRIFT_LIGHT = RECALL_LIGHT + 4,    // DRIFT_LIGHT + 0..3
+    LIGHTS_LEN = DRIFT_LIGHT + 4
   };
   enum EnvPhase { ENV_IDLE, ENV_ATTACK, ENV_SUSTAIN, ENV_DECAY };
 
@@ -97,7 +93,6 @@ struct TheReelPeetEvo : Module {
   float master[16];
   float pool[4][16];
   float poolGenesis[4][16];  // frozen snapshot of each phrase at genesis/reseed time, for Recall
-  float mutationOldSnapshot[4][16];  // pool[p] just before its last mutation, for the before/after flash
   bool phraseActive[4] = {true, true, true, true};
   float blinkPhase = 0.f;  // drives the currently-playing light's pulse; independent of Phrase Duration
   int currentPhraseIdx = 0;
@@ -131,6 +126,7 @@ struct TheReelPeetEvo : Module {
                   "%", 0.f, 100.f);
       configLight(ACTIVE_LIGHT + p, "Phrase " + n + " active");
       configLight(RECALL_LIGHT + p, "Phrase " + n + " recall active");
+      configLight(DRIFT_LIGHT + p, "Phrase " + n + " drift active");
     }
 
     configOutput(OUT_OUTPUT, "Pitch CV (1V/Oct)");
@@ -252,10 +248,8 @@ struct TheReelPeetEvo : Module {
       int p = activeIdx[k];
       float persistP = 1.f - entropyRoll[p];
       if (random::uniform() >= persistP) {
-        for (int i = 0; i < 16; i++) {
-          mutationOldSnapshot[p][i] = pool[p][i];
+        for (int i = 0; i < 16; i++)
           pool[p][i] = candidates[p][i];
-        }
         mutationFlash[p] = 1.f;
       }
     }
@@ -391,15 +385,15 @@ struct TheReelPeetEvo : Module {
       // playthrough using the frozen snapshot right now."
       lights[RECALL_LIGHT + p].setBrightness((p == currentPhraseIdx && usingGenesisNow) ? 1.f : 0.f);
 
-      // Mutation flash: decays after evolveAllPhrases actually replaces a
-      // phrase's pool (see mutationOldSnapshot). Drives EvoMutationDisplay's
-      // opacity directly (read via pointer, not a Light) - a longer window
-      // than the old single LED had, since real mutations are infrequent
-      // enough (minutes apart at default settings) that a brief flash was
-      // too easy to miss entirely.
+      // Drift light: flashes full-bright the instant evolveAllPhrases
+      // actually replaces a phrase's pool, then decays like a hardware
+      // peak/clip LED - a longer window than a typical LED flash, since
+      // real mutations are infrequent enough (minutes apart at default
+      // settings) that a brief flash was too easy to miss entirely.
       const float mutationDecayTime = 4.f;
       mutationFlash[p] -= args.sampleTime / mutationDecayTime;
       if (mutationFlash[p] < 0.f) mutationFlash[p] = 0.f;
+      lights[DRIFT_LIGHT + p].setBrightness(mutationFlash[p]);
     }
 
     if (envPhase == ENV_ATTACK) {
@@ -478,40 +472,6 @@ struct EvoBPMDisplay : TransparentWidget {
   }
 };
 
-// Flashes a phrase's before/after shape the instant it actually mutates
-// (see evolveAllPhrases/mutationFlash), then fades back to blank. Invisible
-// the rest of the time - a single 16-point line survives being squeezed
-// into a ~12mm-wide column far better than discrete bars did (no per-bar
-// gaps eating into visual weight), and only appearing during a real event
-// means there's never stale fine detail sitting on screen to misread.
-struct EvoMutationDisplay : TransparentWidget {
-  float *oldData = nullptr;  // module->mutationOldSnapshot[p][0..15]
-  float *newData = nullptr;  // module->pool[p][0..15]
-  float *flash = nullptr;    // module->mutationFlash[p], 1 at the moment of mutation, decaying to 0
-
-  void drawSeq(const DrawArgs &args, float *data, NVGcolor color, float lineWidth) {
-    const int n = 16;
-    nvgBeginPath(args.vg);
-    for (int i = 0; i < n; i++) {
-      float v = clamp(data[i] / 5.f, 0.f, 1.f);
-      float x = (i + 0.5f) * (box.size.x / n);
-      float y = box.size.y * (1.f - v);
-      if (i == 0) nvgMoveTo(args.vg, x, y);
-      else nvgLineTo(args.vg, x, y);
-    }
-    nvgStrokeColor(args.vg, color);
-    nvgStrokeWidth(args.vg, lineWidth);
-    nvgStroke(args.vg);
-  }
-
-  void draw(const DrawArgs &args) override {
-    if (!oldData || !newData || !flash || *flash <= 0.f) return;
-    float a = clamp(*flash, 0.f, 1.f);
-    drawSeq(args, oldData, nvgRGBA(0x28, 0x0b, 0x0b, (unsigned char)(90.f * a)), 1.5f);
-    drawSeq(args, newData, nvgRGBA(0xd0, 0x20, 0x20, (unsigned char)(220.f * a)), 2.5f);
-  }
-};
-
 // Rack's SVG panel loader (nanosvg) doesn't parse <text> elements at all —
 // only path/rect/circle/line/polygon/g. So every static panel label has to
 // be drawn here in C++, not baked into the SVG as <text>. (TheReelPeet.svg
@@ -559,39 +519,42 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
     addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-    // Left lane = shared/global playback controls (unchanged from before).
-    // Reuses TheReelPeet's exact laneAX/cvDX values.
-    const float laneXL = 14.f;
+    // Left lane = shared/global playback controls. Panel narrowed (280->258
+    // raw), trimming excess left/right margin while keeping a small gap on
+    // both sides - laneXL shifted from 14 to match the lane's new raw
+    // x=7 position (was x=14).
+    const float laneXL = 11.629f;
     const float cvDX   = 4.5f;
 
-    const float runY      = 22.5f;
-    const float lengthY   = 40.f;
-    const float dispY     = 44.f;
-    const float bpmY      = 61.f;
-    const float bpmDispY  = 65.f;
-    const float dynY      = 80.f;   // was 82; nudged up 2mm to help make room for Jitter below
-    const float jitterY   = 95.f;   // new row between Dyn and Rise/Fall
-    const float riseFallY = 108.f;  // was 105; nudged down 3mm to clear Jitter's label
-    const float outY      = 121.f;  // was 117; nudged down 4mm to clear Rise/Fall's label
+    // Whole lane shifted up 7mm from its previous positions (runY was 22.5,
+    // outY was 121) to open real breathing room below Gate at the bottom -
+    // it was sitting close enough to the bottom rail to look cramped.
+    const float runY      = 15.5f;
+    const float lengthY   = 33.f;
+    const float dispY     = 37.f;
+    const float bpmY      = 54.f;
+    const float bpmDispY  = 58.f;
+    const float dynY      = 73.f;
+    const float jitterY   = 88.f;
+    const float riseFallY = 101.f;
+    const float outY      = 114.f;
 
-    // 4 phrase-pool columns on the right. Rows align with the left lane's
-    // top two rows (Active with Run, Entropy with Length) for a clean grid
-    // look, now that Persist, Phrase L, and Recall are all gone (merged
-    // into Entropy / derived from Steps+BPM / a fixed constant). Bottom of
-    // each column left empty for future per-phrase CV inputs.
-    // These are mm design values (fed through mm2px like everything else
-    // here), NOT the SVG's raw rect coordinates (80/126/172/218, width 40,
-    // in res/TheReelPeetEvo.svg) — raw SVG units are Rack's own internal
-    // pixel space directly, already equal to mm2px()'s output, not its
-    // input. Each value here is (raw rect center in that panel) / 2.9528
-    // (the mm2px scale), so the knobs land inside their lane's tint.
-    const float colX[4] = {33.9f, 49.4f, 65.0f, 80.6f};
-    const float activeY      = runY;
-    const float entropyY     = lengthY;
-    const float recallLightY = entropyY + 17.f;   // below Entropy's own label
-    const float mutateLabelY = recallLightY + 9.f;
-    const float mutateDispY  = mutateLabelY + 5.f;
-    const float mutateDispH  = 44.f;  // fills the rest of the column, down near the bottom margin
+    // 4 phrase pools on the right, arranged as a 2x2 grid (pool1 top-left,
+    // pool2 top-right, pool3 bottom-left, pool4 bottom-right) rather than
+    // the old 4-across layout. Columns are horizontal design values (fed
+    // through mm2px), matching res/TheReelPeetEvo.svg's pool1-4 rects (raw
+    // px / 2.9528, same conversion used throughout this file). Row 1's
+    // Active/Entropy is aligned with Run in the global lane; row 2 stacks
+    // directly below row 1's Recall/Drift rather than using half the panel
+    // height each, since there's no longer per-pool display content that
+    // needs the extra room (see the removed EvoMutationDisplay).
+    // Within each pool box: Active+Entropy share a row (left/right
+    // sub-columns), Recall+Drift share a row below in the same two
+    // sub-columns (so Active/Recall align vertically, and Entropy/Drift
+    // align vertically).
+    const float poolColLeft[2] = {24.723f, 55.202f};      // left edge of each pool column (raw x=73, 163)
+    const float rowAY[2] = {runY, runY + 32.f};           // Active+Entropy row, per pool-grid-row
+    const float rowBY[2] = {rowAY[0] + 16.f, rowAY[1] + 16.f};  // Recall+Drift row, per pool-grid-row
 
     addParam(createParamCentered<LEDButton>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_PARAM));
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
@@ -608,11 +571,17 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
 
     for (int p = 0; p < 4; p++) {
-      addParam(createParamCentered<LEDButton>(mm2px(Vec(colX[p], activeY)), module, TheReelPeetEvo::ACTIVE_PARAM + p));
-      addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(colX[p], activeY)), module, TheReelPeetEvo::ACTIVE_LIGHT + p));
+      float colLeft = poolColLeft[p % 2];
+      int row       = p / 2;
+      float ctrlX0  = colLeft + 7.f;   // left sub-column: Active, Recall
+      float ctrlX1  = colLeft + 22.f;  // right sub-column: Entropy, Drift
 
-      addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(colX[p], entropyY)), module, TheReelPeetEvo::ENTROPY_PARAM + p));
-      addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(colX[p], recallLightY)), module, TheReelPeetEvo::RECALL_LIGHT + p));
+      addParam(createParamCentered<LEDButton>(mm2px(Vec(ctrlX0, rowAY[row])), module, TheReelPeetEvo::ACTIVE_PARAM + p));
+      addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(ctrlX0, rowAY[row])), module, TheReelPeetEvo::ACTIVE_LIGHT + p));
+
+      addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(ctrlX1, rowAY[row])), module, TheReelPeetEvo::ENTROPY_PARAM + p));
+      addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(ctrlX0, rowBY[row])), module, TheReelPeetEvo::RECALL_LIGHT + p));
+      addChild(createLightCentered<SmallLight<RedLight>>(mm2px(Vec(ctrlX1, rowBY[row])), module, TheReelPeetEvo::DRIFT_LIGHT + p));
     }
 
     if (module) {
@@ -642,18 +611,15 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addLabel("Gate", laneXL + cvDX, outY + 3.5f, dispW2, 8.f);
 
       for (int p = 0; p < 4; p++) {
-        addLabel(std::to_string(p + 1), colX[p], activeY + 4.f, dispW, 9.f);
-        addLabel("Entropy", colX[p], entropyY + 6.f, dispW, 9.f);
-        addLabel("Recall", colX[p], recallLightY + 2.5f, dispW, 7.f);
-        addLabel("Mutate", colX[p], mutateLabelY, dispW, 7.f);
+        float colLeft = poolColLeft[p % 2];
+        int row       = p / 2;
+        float ctrlX0  = colLeft + 7.f;
+        float ctrlX1  = colLeft + 22.f;
 
-        auto *mutationDisplay = new EvoMutationDisplay;
-        mutationDisplay->box.pos = mm2px(Vec(colX[p] - 6.f, mutateDispY));
-        mutationDisplay->box.size = mm2px(Vec(12.f, mutateDispH));
-        mutationDisplay->oldData = module->mutationOldSnapshot[p];
-        mutationDisplay->newData = module->pool[p];
-        mutationDisplay->flash = &module->mutationFlash[p];
-        addChild(mutationDisplay);
+        addLabel(std::to_string(p + 1), ctrlX0, rowAY[row] + 4.f, dispW, 9.f);
+        addLabel("Entropy", ctrlX1, rowAY[row] + 6.f, dispW, 8.f);
+        addLabel("Recall", ctrlX0, rowBY[row] + 2.5f, dispW, 7.f);
+        addLabel("Drift", ctrlX1, rowBY[row] + 2.5f, dispW, 7.f);
       }
 
       auto *lenDisplay = new EvoLengthDisplay;
