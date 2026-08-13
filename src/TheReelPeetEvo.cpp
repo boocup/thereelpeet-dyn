@@ -8,10 +8,19 @@ using namespace rack::ui;
 //   MODULE DEFINITION
 // =======================
 //
-// Single-lane genetic-algorithm variant of TheReelPeet. Playback (Dyn
-// hold/drop probability, AR envelope via Rise/Fall) reuses the same
-// mechanism as TheReelPeet::processLane, just for one lane, always
-// reading from whichever phrase is currently active.
+// Single-lane genetic-algorithm variant of TheReelPeet. Playback (AR
+// envelope via Rise/Fall) reuses the same mechanism as
+// TheReelPeet::processLane, just for one lane, always reading from
+// whichever phrase is currently active, always triggering normally each
+// step - the Dynamics feature (held-gate/note-drop probability) this
+// module briefly had was dropped when its knob was repurposed for Jitter.
+//
+// No internal BPM knob or free-running clock - the module is externally
+// clocked via Clock In. Each incoming pulse advances one step; with
+// nothing patched in, steps simply don't advance (same as any other
+// clocked Eurorack sequencer). clockPeriod (the measured time between the
+// last two pulses) stands in for the old BPM-derived per-step duration
+// wherever one's needed, e.g. computing Phrase Duration.
 //
 // Phrase-cycling design: pool[4][16] holds up to 4 phrases, each with its
 // own Active toggle and Entropy.
@@ -59,16 +68,14 @@ struct TheReelPeetEvo : Module {
   enum ParamId {
     RUN_PARAM,
     LENGTH_PARAM,
-    BPM_PARAM,
-    DYNAMICS_PARAM,
+    JITTER_PARAM,   // was DYNAMICS_PARAM - Dynamics dropped, this knob repurposed to drive Jitter instead
     RISE_PARAM,
     FALL_PARAM,
-    JITTER_PARAM,
     ACTIVE_PARAM,                        // ACTIVE_PARAM + 0..3
     ENTROPY_PARAM = ACTIVE_PARAM + 4,    // ENTROPY_PARAM + 0..3
     PARAMS_LEN = ENTROPY_PARAM + 4
   };
-  enum InputId { INPUTS_LEN };
+  enum InputId { CLOCK_INPUT, INPUTS_LEN };
   enum OutputId { OUT_OUTPUT, ENV_OUTPUT, OUTPUTS_LEN };
   enum LightId {
     RUN_LIGHT,
@@ -77,15 +84,12 @@ struct TheReelPeetEvo : Module {
     DRIFT_LIGHT = RECALL_LIGHT + 4,    // DRIFT_LIGHT + 0..3
     LIGHTS_LEN = DRIFT_LIGHT + 4
   };
-  enum EnvPhase { ENV_IDLE, ENV_ATTACK, ENV_SUSTAIN, ENV_DECAY };
+  enum EnvPhase { ENV_IDLE, ENV_ATTACK, ENV_DECAY };
 
   bool running = false;
   int step = 0;
-  float timer = 0.f;
   float trigTimer = 0.f;
-  float holdTimer = 0.f;
   float heldCV = 0.f;
-  bool stepMuted = false;
   float envLevel = 0.f;
   int envPhase = ENV_IDLE;
   int len = 8;
@@ -100,23 +104,23 @@ struct TheReelPeetEvo : Module {
   float phraseTimer = 0.f;
   int phrasesPlayedThisRound = 0;
   float mutationFlash[4] = {0.f, 0.f, 0.f, 0.f};  // decays after a phrase's pool actually gets replaced
+  float clockPeriod = 0.5f;    // measured time between the last two Clock In pulses, drives Phrase Duration
+  float timeSinceClock = 0.f;  // time since the last Clock In pulse; becomes the next clockPeriod
 
   dsp::SchmittTrigger onTrig;
   dsp::SchmittTrigger activeTrig[4];
+  dsp::SchmittTrigger clockTrig;
 
   TheReelPeetEvo() {
     config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
     configParam(RUN_PARAM, 0.f, 1.f, 0.f, "Run toggle");
     configParam(LENGTH_PARAM, 2.f, 16.f, 8.f, "Length (2-16 steps)");
-    configParam(BPM_PARAM, 1.f, 240.f, 120.f, "BPM", " BPM");
-    configParam(DYNAMICS_PARAM, -1.f, 1.f, 0.f,
-                "Dynamics. CW: held gates, CCW: note drops");
-    configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
-    configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
     configParam(JITTER_PARAM, 0.f, 1.f, 0.f,
                 "Jitter (randomizes each phrase's effective Entropy per generation)",
                 "%", 0.f, 100.f);
+    configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
+    configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
 
     for (int p = 0; p < 4; p++) {
       std::string n = std::to_string(p + 1);
@@ -129,6 +133,7 @@ struct TheReelPeetEvo : Module {
       configLight(DRIFT_LIGHT + p, "Phrase " + n + " drift active");
     }
 
+    configInput(CLOCK_INPUT, "Clock");
     configOutput(OUT_OUTPUT, "Pitch CV (1V/Oct)");
     configOutput(ENV_OUTPUT, "Envelope CV (0-10V)");
     configLight(RUN_LIGHT, "Running");
@@ -282,11 +287,8 @@ struct TheReelPeetEvo : Module {
       }
     }
 
-    float bpm = clamp(params[BPM_PARAM].getValue(), 1.f, 240.f);
-    const float stepTime = 60.f / bpm;
     float riseTime = params[RISE_PARAM].getValue();
     float fallTime = params[FALL_PARAM].getValue();
-    float dynamics = params[DYNAMICS_PARAM].getValue();
 
     float outCV = 0.f;
 
@@ -294,9 +296,18 @@ struct TheReelPeetEvo : Module {
       trigTimer -= args.sampleTime;
       if (trigTimer < 0.f) trigTimer = 0.f;
     }
-    if (holdTimer > 0.f) {
-      holdTimer -= args.sampleTime;
-      if (holdTimer < 0.f) holdTimer = 0.f;
+
+    // Clock is measured regardless of Run state (avoids a stuck-trigger
+    // edge case if a pulse arrives while stopped), but only acted on below
+    // while running. clockPeriod is the measured time between the last two
+    // pulses - stands in for the old BPM-derived stepTime everywhere a
+    // per-step duration is needed (there's no free-running internal clock
+    // anymore; steps only advance on an actual incoming pulse).
+    timeSinceClock += args.sampleTime;
+    bool clockEdge = clockTrig.process(inputs[CLOCK_INPUT].getVoltage());
+    if (clockEdge) {
+      clockPeriod = timeSinceClock;
+      timeSinceClock = 0.f;
     }
 
     if (running) {
@@ -307,10 +318,10 @@ struct TheReelPeetEvo : Module {
       if (activeCount > 0) {
         // Phrase Duration is no longer a knob - each phrase holds for a
         // fixed number of full loops through the pattern, so it always
-        // feels proportionate to Length/BPM rather than needing its own
+        // feels proportionate to Length/Clock rather than needing its own
         // control. phraseLoops is a fixed constant, not user-adjustable.
         const float phraseLoops = 4.f;
-        float phraseDuration = len * stepTime * phraseLoops;
+        float phraseDuration = len * clockPeriod * phraseLoops;
         phraseTimer += args.sampleTime;
         if (phraseTimer >= phraseDuration) {
           phraseTimer -= phraseDuration;
@@ -323,44 +334,25 @@ struct TheReelPeetEvo : Module {
         }
       }
 
-      timer += args.sampleTime;
-      if (timer >= stepTime) {
-        timer -= stepTime;
+      if (clockEdge) {
         step = (step + 1) % len;
-
-        stepMuted = false;
         trigTimer = 0.f;
 
-        if (holdTimer <= 0.f && envPhase == ENV_IDLE) {
+        if (envPhase == ENV_IDLE) {
           const float *playingSeq = usingGenesisNow ? poolGenesis[currentPhraseIdx] : pool[currentPhraseIdx];
-          const float dynVal = clamp(dynamics, -1.f, 1.f);
-          const float dynCurved = dynVal * dynVal * std::abs(dynVal);
-          if (dynVal > 0.f && random::uniform() < dynCurved) {
-            float jitter = 1.f + (random::uniform() * 0.2f - 0.1f);
-            holdTimer = riseTime + len * stepTime * jitter;
-            heldCV = playingSeq[step];
-            envPhase = ENV_ATTACK;
-          } else if (dynVal < 0.f && random::uniform() < dynCurved) {
-            stepMuted = true;
-            envLevel = 0.f;
-            envPhase = ENV_IDLE;
-          } else {
-            trigTimer = 0.01f;
-            heldCV = playingSeq[step];
-            envPhase = ENV_ATTACK;
-          }
+          trigTimer = 0.01f;
+          heldCV = playingSeq[step];
+          envPhase = ENV_ATTACK;
         }
       }
-      outCV = stepMuted ? 0.f : heldCV;
+      outCV = heldCV;
     } else {
-      timer = 0.f;
       step = 0;
       trigTimer = 0.f;
-      holdTimer = 0.f;
-      stepMuted = false;
       envLevel = 0.f;
       envPhase = ENV_IDLE;
       phraseTimer = 0.f;
+      timeSinceClock = 0.f;
     }
 
     // Active-light brightness: off = deactivated, steady = active but
@@ -404,10 +396,6 @@ struct TheReelPeetEvo : Module {
         envLevel = std::min(envLevel, 10.f);
       }
       if (envLevel >= 10.f)
-        envPhase = (holdTimer > 0.f) ? ENV_SUSTAIN : ENV_DECAY;
-    } else if (envPhase == ENV_SUSTAIN) {
-      envLevel = 10.f;
-      if (holdTimer <= 0.f)
         envPhase = ENV_DECAY;
     } else if (envPhase == ENV_DECAY) {
       if (fallTime < 0.001f) {
@@ -448,27 +436,6 @@ struct EvoLengthDisplay : TransparentWidget {
     nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.35f, buf, nullptr);
     nvgFontSize(args.vg, 9.f);
     nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.65f, "Steps", nullptr);
-  }
-};
-
-struct EvoBPMDisplay : TransparentWidget {
-  Param *param = nullptr;
-
-  void draw(const DrawArgs &args) override {
-    if (!param) return;
-    int bpm = (int)std::round(param->getValue());
-
-    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d", bpm);
-
-    nvgFontSize(args.vg, 9.f);
-    nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.35f, buf, nullptr);
-    nvgFontSize(args.vg, 8.f);
-    nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.65f, "BPM", nullptr);
   }
 };
 
@@ -526,18 +493,18 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float laneXL = 11.629f;
     const float cvDX   = 4.5f;
 
-    // Whole lane shifted up 7mm from its previous positions (runY was 22.5,
-    // outY was 121) to open real breathing room below Gate at the bottom -
-    // it was sitting close enough to the bottom rail to look cramped.
     const float runY      = 15.5f;
     const float lengthY   = 33.f;
     const float dispY     = 37.f;
-    const float bpmY      = 54.f;
-    const float bpmDispY  = 58.f;
-    const float dynY      = 73.f;
-    const float jitterY   = 88.f;
-    const float riseFallY = 101.f;
-    const float outY      = 114.f;
+    // BPM knob is gone - the module is externally clocked now (see Clock
+    // In below) - so Jitter moved up into BPM's old row, and Rise/Fall
+    // moved up to close the gap that used to hold Jitter's own row.
+    const float jitterY   = 54.f;
+    const float riseFallY = 70.f;
+    // The CV row (outputs + new Clock In) stays anchored near the bottom
+    // rather than following Jitter/Rise/Fall up, leaving open space above it.
+    const float outY      = 102.f;
+    const float clockInY  = 113.f;
 
     // 4 phrase pools on the right, arranged as a 2x2 grid (pool1 top-left,
     // pool2 top-right, pool3 bottom-left, pool4 bottom-right) rather than
@@ -560,15 +527,15 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
 
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, lengthY)), module, TheReelPeetEvo::LENGTH_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, bpmY)), module, TheReelPeetEvo::BPM_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, dynY)), module, TheReelPeetEvo::DYNAMICS_PARAM));
-    addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL, jitterY)), module, TheReelPeetEvo::JITTER_PARAM));
+    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, jitterY)), module, TheReelPeetEvo::JITTER_PARAM));
 
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
 
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
+
+    addInput(createInputCentered<PJ301MPort>(mm2px(Vec(laneXL, clockInY)), module, TheReelPeetEvo::CLOCK_INPUT));
 
     for (int p = 0; p < 4; p++) {
       float colLeft = poolColLeft[p % 2];
@@ -603,12 +570,12 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       // on the new panel width — see res/TheReelPeetEvo.svg.
 
       addLabel("Run", laneXL, runY + 4.f, dispW, 9.f);
-      addLabel("Dyn", laneXL, dynY + 6.f, dispW, 9.f);
-      addLabel("Jitter", laneXL, jitterY + 4.f, dispW, 8.f);
+      addLabel("Jitter", laneXL, jitterY + 6.f, dispW, 9.f);
       addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
       addLabel("Gate", laneXL + cvDX, outY + 3.5f, dispW2, 8.f);
+      addLabel("Clock", laneXL, clockInY + 3.5f, dispW, 8.f);
 
       for (int p = 0; p < 4; p++) {
         float colLeft = poolColLeft[p % 2];
@@ -627,12 +594,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       lenDisplay->box.size = mm2px(Vec(dispW, 11.f));
       lenDisplay->value = &module->len;
       addChild(lenDisplay);
-
-      auto *bpmDisplay = new EvoBPMDisplay();
-      bpmDisplay->param = &module->params[TheReelPeetEvo::BPM_PARAM];
-      bpmDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, bpmDispY));
-      bpmDisplay->box.size = mm2px(Vec(dispW, 11.f));
-      addChild(bpmDisplay);
     }
   }
 };
