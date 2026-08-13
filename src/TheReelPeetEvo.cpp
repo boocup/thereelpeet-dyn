@@ -439,6 +439,114 @@ struct EvoLengthDisplay : TransparentWidget {
   }
 };
 
+// Static evolution-cycle flowchart filling the open space below the pool
+// grid: POOL -> SPLIT -> MUTATE, wraps to KEEP? -> EVOLVED, loops back to
+// POOL, with full-sentence Entropy/Jitter definitions below the whole
+// flowchart (not squeezed inside it - an earlier version tried that and
+// kept fighting the loop-back arrow for the same cramped space). Purely
+// decorative/explanatory, not tied to live module state - drawn in a
+// fixed local coordinate space (178x140) matching the widget's own box
+// size 1:1, no scaling math needed. A first version tried to do this as
+// SVG panel art; reverted because nanosvg doesn't parse <text> at all
+// (same reason the wordmark below is hand-traced path art, and every
+// other label in this file is a widget like this one, not baked into
+// the SVG).
+struct EvoFlowDiagram : TransparentWidget {
+  void triangle(const DrawArgs &args, float x0, float y0, float x1, float y1, float x2, float y2) {
+    nvgBeginPath(args.vg);
+    nvgMoveTo(args.vg, x0, y0);
+    nvgLineTo(args.vg, x1, y1);
+    nvgLineTo(args.vg, x2, y2);
+    nvgClosePath(args.vg);
+    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    nvgFill(args.vg);
+  }
+
+  void drawBox(const DrawArgs &args, float x, float y, float w, float h, const char *label, float fontSize) {
+    nvgBeginPath(args.vg);
+    nvgRoundedRect(args.vg, x, y, w, h, 4.f);
+    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    nvgStrokeWidth(args.vg, 2.f);
+    nvgStroke(args.vg);
+
+    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFontSize(args.vg, fontSize);
+    nvgText(args.vg, x + w * 0.5f, y + h * 0.5f, label, nullptr);
+  }
+
+  void line(const DrawArgs &args, float x0, float y0, float x1, float y1) {
+    nvgBeginPath(args.vg);
+    nvgMoveTo(args.vg, x0, y0);
+    nvgLineTo(args.vg, x1, y1);
+    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    nvgStrokeWidth(args.vg, 2.f);
+    nvgStroke(args.vg);
+  }
+
+  void draw(const DrawArgs &args) override {
+    // Row 1: POOL -> SPLIT -> MUTATE
+    drawBox(args, 4, 10, 50, 22, "POOL", 10.f);
+    line(args, 54, 21, 63, 21);
+    triangle(args, 63, 21, 57, 17.5f, 57, 24.5f);
+
+    drawBox(args, 64, 10, 50, 22, "SPLIT", 10.f);
+    line(args, 114, 21, 123, 21);
+    triangle(args, 123, 21, 117, 17.5f, 117, 24.5f);
+
+    drawBox(args, 124, 10, 50, 22, "MUTATE", 9.5f);
+
+    // Plain vertical connector, no text - Entropy/Jitter moved below the
+    // whole diagram (see below), which is also what let the loop-back
+    // arrow go back to a simple, uncluttered curve instead of hugging the
+    // canvas edge to dodge words that used to live in this middle band.
+    // KEEP? top edge is y=44 (see below) - the arrow must stop there, not
+    // overshoot through the whole box like the previous y=66 target did
+    // (a leftover from before KEEP?/EVOLVED moved up).
+    line(args, 149, 32, 149, 38);
+    triangle(args, 149, 44, 145.5f, 38, 152.5f, 38);
+
+    // Row 2: KEEP? -> EVOLVED (flow continues right to left), pulled up
+    // close under row 1 now that nothing needs to live between them.
+    drawBox(args, 124, 44, 50, 22, "KEEP?", 10.f);
+    line(args, 124, 55, 115, 55);
+    triangle(args, 115, 55, 121, 51.5f, 121, 58.5f);
+
+    drawBox(args, 61, 44, 53, 22, "EVOLVED", 9.f);
+
+    nvgBeginPath(args.vg);
+    nvgMoveTo(args.vg, 61, 55);
+    nvgBezierTo(args.vg, 25, 55, 15, 45, 25, 32);
+    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    nvgStrokeWidth(args.vg, 2.f);
+    nvgStroke(args.vg);
+    triangle(args, 25, 32, 18.5f, 34.5f, 23, 40);
+
+    // Entropy/Jitter, as full sentence definitions below the whole
+    // flowchart (not squeezed inside it) - what actually drives the
+    // Mutate/Keep step above, since the knob names alone don't explain
+    // that. This is noticeably smaller text than the flowchart itself at
+    // the MetaModule's actual display resolution - a real tradeoff for
+    // fitting real sentences in, flagged rather than hidden.
+    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+
+    nvgFontSize(args.vg, 9.f);
+    nvgText(args.vg, 89, 82, "Entropy", nullptr);
+    nvgFontSize(args.vg, 7.f);
+    nvgText(args.vg, 89, 92, "Sets how much each phrase mutates, and", nullptr);
+    nvgText(args.vg, 89, 101, "how readily changes replace the pattern.", nullptr);
+
+    nvgFontSize(args.vg, 9.f);
+    nvgText(args.vg, 89, 115, "Jitter", nullptr);
+    nvgFontSize(args.vg, 7.f);
+    nvgText(args.vg, 89, 125, "Randomly nudges Entropy each generation,", nullptr);
+    nvgText(args.vg, 89, 134, "so phrases don't evolve in lockstep.", nullptr);
+  }
+};
+
 // Rack's SVG panel loader (nanosvg) doesn't parse <text> elements at all —
 // only path/rect/circle/line/polygon/g. So every static panel label has to
 // be drawn here in C++, not baked into the SVG as <text>. (TheReelPeet.svg
@@ -594,6 +702,13 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       lenDisplay->box.size = mm2px(Vec(dispW, 11.f));
       lenDisplay->value = &module->len;
       addChild(lenDisplay);
+
+      // Fills the open space below the pool grid (raw x=73-251, y=220-360;
+      // poolColLeft[0] is that same raw x=73 left edge in mm).
+      auto *flowDiagram = new EvoFlowDiagram;
+      flowDiagram->box.pos = mm2px(Vec(poolColLeft[0], 74.51f));
+      flowDiagram->box.size = mm2px(Vec(60.27f, 47.41f));
+      addChild(flowDiagram);
     }
   }
 };

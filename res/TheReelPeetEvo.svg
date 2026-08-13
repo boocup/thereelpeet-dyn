@@ -44,6 +44,17 @@
   <rect x="163" y="126" width="88" height="94" rx="7" ry="7"
         fill="#9a5fd9" opacity="0.18" stroke="#9a5fd9" stroke-opacity="0.55" stroke-width="1.5" id="pool4" />
 
+  <!-- The evolution-cycle flowchart (POOL/CROSS/MUTATE/KEEP?/EVOLVED, with
+       Entropy+Jitter labeled) lives in src/TheReelPeetEvo.cpp as a C++
+       widget (EvoFlowDiagram), not here. Rack's SVG panel loader (nanosvg)
+       doesn't parse <text> at all, so any words baked into this file
+       would silently never appear in the live VCV Rack view - the same
+       reason the wordmark below is hand-traced <path> art instead of
+       <text>, and every other panel label in this module is drawn via a
+       C++ TransparentWidget. Tracing 7 more words by hand wasn't worth it
+       when the C++ widget path already works and is proven on real
+       MetaModule hardware throughout this file. -->
+
   <!-- Wordmark: THEREELPEET, same artwork as TheReelPeet.svg. Positioned and
        scaled by transforming every coordinate in the path data directly
        (not a <g transform>, which isn't proven to work on the actual
