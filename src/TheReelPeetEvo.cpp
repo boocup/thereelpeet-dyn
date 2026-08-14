@@ -636,11 +636,23 @@ struct EvoPoolNumeral : TransparentWidget {
 
   void draw(const DrawArgs &args) override {
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
     float fontSize = box.size.y * 0.72f;
     nvgFontSize(args.vg, fontSize);
     float cx = box.size.x * 0.5f;
     float cy = box.size.y * 0.5f;
+
+    // NVG_ALIGN_MIDDLE centers on the font's ascender/descender metrics,
+    // not this specific glyph's own visual shape - digits like "1" render
+    // with a different apparent top/bottom than "3" or "4" as a result, so
+    // each pool's numeral looked inconsistently positioned against the
+    // others. Measuring this glyph's actual bounding box and centering on
+    // THAT instead makes every digit's visual top/bottom land in the same
+    // place across all 4 boxes.
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
+    float bounds[4];
+    nvgTextBounds(args.vg, cx, 0.f, text.c_str(), nullptr, bounds);
+    float glyphMidY = (bounds[1] + bounds[3]) * 0.5f;
+    float baselineY = cy - glyphMidY;
 
     // Outline temporarily disabled to preview the numeral without it -
     // re-enable this block to restore the light-gray stamped outline.
@@ -651,13 +663,13 @@ struct EvoPoolNumeral : TransparentWidget {
     for (int i = 0; i < steps; i++) {
       float angle = 6.28318530718f * (float)i / (float)steps;
       float ox = cx + std::cos(angle) * outlineWidth;
-      float oy = cy + std::sin(angle) * outlineWidth;
+      float oy = baselineY + std::sin(angle) * outlineWidth;
       nvgText(args.vg, ox, oy, text.c_str(), nullptr);
     }
 #endif
 
     nvgFillColor(args.vg, color);
-    nvgText(args.vg, cx, cy, text.c_str(), nullptr);
+    nvgText(args.vg, cx, baselineY, text.c_str(), nullptr);
   }
 };
 
@@ -674,43 +686,16 @@ struct EvoStaticLabel : TransparentWidget {
 
   void draw(const DrawArgs &args) override {
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    nvgFillColor(args.vg, nvgRGB(0x28, 0x0b, 0x0b));
+    // Neutral black (was a reddish #280b0b) so labels read consistently
+    // sitting on top of all 4 differently-hued pools, rather than quietly
+    // favoring pool1's red family - matches EvoLengthDisplay's "8 Steps"
+    // text, which already used plain black.
+    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
     nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
     nvgFontSize(args.vg, fontSize);
     if (bold)
       nvgFontBlur(args.vg, 0.15f);
     nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.5f, text.c_str(), nullptr);
-  }
-};
-
-// Sideways text reading bottom-to-top (first character at the anchor,
-// each later character further up) - used for the "QUANTIZE" label
-// between the two piano-key columns. nanovg has no vertical-text mode, so
-// this rotates the whole draw context -90 degrees around the widget's
-// bottom-center point before drawing normally: local +x (later
-// characters) becomes screen -y (upward) after the rotation.
-struct EvoVerticalLabel : TransparentWidget {
-  std::string text;
-  float fontSize = 10.f;
-
-  void draw(const DrawArgs &args) override {
-    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    nvgFillColor(args.vg, nvgRGB(0x28, 0x0b, 0x0b));
-    nvgFontSize(args.vg, fontSize);
-    // Centered (not left-aligned) so the anchor is the middle of the
-    // string rather than its start - the word sits centered in the gap at
-    // its natural, unstretched size, with "Q" still ending up at the low
-    // (screen-bottom) end and "E" at the high end after the rotation
-    // below. An earlier version force-stretched the letters to span the
-    // full widget height, which just spread them out into an
-    // unreadable-looking mess - normal size reads far better.
-    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-
-    nvgSave(args.vg);
-    nvgTranslate(args.vg, box.size.x * 0.5f, box.size.y * 0.5f);
-    nvgRotate(args.vg, -1.5707963f);
-    nvgText(args.vg, 0.f, 0.f, text.c_str(), nullptr);
-    nvgRestore(args.vg);
   }
 };
 
@@ -750,10 +735,11 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float lengthY   = 33.f;
     const float dispY     = 37.f;
     // BPM knob is gone - the module is externally clocked now (see Clock
-    // In below) - so Jitter moved up into BPM's old row, and Rise/Fall
-    // moved up to close the gap that used to hold Jitter's own row.
-    const float jitterY   = 54.f;
-    const float riseFallY = 70.f;
+    // In below). Jitter and Rise/Fall are evenly spaced (23mm steps)
+    // between Length and the output row, instead of clustering near the
+    // top and leaving a big empty gap above the outputs.
+    const float jitterY   = 56.f;
+    const float riseFallY = 79.f;
     // The CV row (outputs + new Clock In) stays anchored near the bottom
     // rather than following Jitter/Rise/Fall up, leaving open space above it.
     const float outY      = 102.f;
@@ -824,13 +810,12 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // (none between E/F or B/C, same as a real keyboard). No text labels -
     // the black/white key positions are the identification, same as on
     // the hardware this is modeled after (Intellijel Scales).
-    // Pulled down from the pool grid (78mm) and pitch tightened (7.5mm),
-    // so the topmost button (B) clears the quantizer's grey background
-    // rect below (top edge raw y=223, ~75.6mm) with real margin instead of
-    // poking above it.
-    const float whiteTopY = 80.f;   // y of the topmost row (B); C lands at the bottom
+    // Nudged up (raw y=223 -> 216, i.e. 80mm -> 77.63mm here) to sit closer
+    // under pools 3/4, while keeping the same clearance from the
+    // background rect's top edge (see quantizerBgL/R in the SVG) so the
+    // topmost button (B) still doesn't poke above it.
+    const float whiteTopY = 77.63f;   // y of the topmost row (B); C lands at the bottom
     const float whitePitchY = 6.85f;
-    const float quantGapCenterX = poolColLeft[0] + 30.135f;  // horizontal midpoint between the two columns
     auto addPianoColumn = [&](float centerX, int paramBase, int lightBase) {
       float whiteX = centerX + 4.f;
       float blackX = whiteX - 8.f;
@@ -851,15 +836,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     };
     addPianoColumn(poolColLeft[0] + 14.9f, TheReelPeetEvo::NOTE_PARAM_L, TheReelPeetEvo::NOTE_LIGHT_L);
     addPianoColumn(poolColLeft[1] + 14.9f, TheReelPeetEvo::NOTE_PARAM_R, TheReelPeetEvo::NOTE_LIGHT_R);
-
-    // "QUANTIZE", vertical, Q at the bottom, in the horizontal gap between
-    // the two piano-key columns above.
-    auto *quantizeLabel = new EvoVerticalLabel;
-    quantizeLabel->text = "QUANTIZE (OPTIONAL)";
-    quantizeLabel->fontSize = 15.f;
-    quantizeLabel->box.pos = mm2px(Vec(quantGapCenterX - 6.f, whiteTopY));
-    quantizeLabel->box.size = mm2px(Vec(12.f, 6.f * whitePitchY));
-    addChild(quantizeLabel);
 
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));

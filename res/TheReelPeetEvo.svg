@@ -11,12 +11,28 @@
       <stop offset="0%" stop-color="#d0d0d0" id="stopEvo1" />
       <stop offset="100%" stop-color="#b8b8b8" id="stopEvo2" />
     </linearGradient>
+    <!-- Quantizer background gradients: each fades from the color of the
+         pool at the TOP of its column to the pool at the BOTTOM, since
+         each quantizer governs both (Left = pools 1&3, Right = pools 2&4)
+         when both quantizers are in use - see quantSet in the .cpp. -->
+    <linearGradient id="quantGradL" x1="0" y1="223" x2="0" y2="372" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#d94a4a" />
+      <stop offset="100%" stop-color="#d9b44a" />
+    </linearGradient>
+    <linearGradient id="quantGradR" x1="0" y1="223" x2="0" y2="372" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4a78d9" />
+      <stop offset="100%" stop-color="#9a5fd9" />
+    </linearGradient>
   </defs>
 
   <!-- Main panel background -->
   <rect id="panel" x="0" y="0" width="258" height="380" fill="url(#bgGradEvo)" />
 
-  <!-- Global/shared playback lane — white, to read as neutral/control vs. the colored pools.
+  <!-- Global/shared playback lane — white/neutral, so it reads as
+       categorically different from the 4 colored pools (shared chassis vs.
+       identity color), not as a 5th competing hue. Briefly tried green;
+       reverted after a full color-scheme review favored keeping color
+       meaning reserved for the pools alone.
        Panel narrowed from 280 to 258 (trimmed excess left/right margin,
        keeping a small breathing gap on both sides) - everything below
        shifted left 7 raw units to close up the left margin, and the panel's
@@ -44,16 +60,21 @@
   <rect x="163" y="120" width="88" height="94" rx="7" ry="7"
         fill="#9a5fd9" opacity="0.18" stroke="#9a5fd9" stroke-opacity="0.55" stroke-width="1.5" id="pool4" />
 
-  <!-- Quantizer background, grey to set the two piano-key note-toggle
-       columns (src/TheReelPeetEvo.cpp, NOTE_PARAM_L/R) apart from the
-       phrase pools above, same visual treatment as pool1-4. Spans the
-       same width as pool3+pool4 combined; pool3/4 were lifted 6px (y
-       126->120) to close the gap and make room for this. Top/bottom
-       margins sized with the piano buttons' own radius in mind (see
-       whiteTopY/whitePitchY in the .cpp) so the topmost (B) and
+  <!-- Quantizer backgrounds, gradient-filled to reflect which pools each
+       column governs (Left = pools 1&3, Right = pools 2&4 -
+       src/TheReelPeetEvo.cpp NOTE_PARAM_L/R): top-of-square starts in the
+       upper pool's color, fading to the lower pool's color by the bottom.
+       Same width/x as pool3/pool4 respectively, so they read as a direct
+       continuation of the pool grid columns above. No stroke (unlike
+       pool1-4) - with the gradient fill already doing the color work, an
+       outline here read as visual clutter rather than definition. Top/
+       bottom margins sized with the piano buttons' own radius in mind
+       (see whiteTopY/whitePitchY in the .cpp) so the topmost (B) and
        bottommost (C) buttons land fully inside, not overlapping the edge. -->
-  <rect x="73" y="223" width="178" height="149" rx="7" ry="7"
-        fill="#888888" opacity="0.18" stroke="#888888" stroke-opacity="0.55" stroke-width="1.5" id="quantizerBg" />
+  <rect x="73" y="216" width="88" height="149" rx="7" ry="7"
+        fill="url(#quantGradL)" opacity="0.18" id="quantizerBgL" />
+  <rect x="163" y="216" width="88" height="149" rx="7" ry="7"
+        fill="url(#quantGradR)" opacity="0.18" id="quantizerBgR" />
 
   <!-- The evolution-cycle flowchart (POOL/CROSS/MUTATE/KEEP?/EVOLVED, with
        Entropy+Jitter labeled) lives in src/TheReelPeetEvo.cpp as a C++
