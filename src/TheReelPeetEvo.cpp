@@ -439,111 +439,40 @@ struct EvoLengthDisplay : TransparentWidget {
   }
 };
 
-// Static evolution-cycle flowchart filling the open space below the pool
-// grid: POOL -> SPLIT -> MUTATE, wraps to KEEP? -> EVOLVED, loops back to
-// POOL, with full-sentence Entropy/Jitter definitions below the whole
-// flowchart (not squeezed inside it - an earlier version tried that and
-// kept fighting the loop-back arrow for the same cramped space). Purely
-// decorative/explanatory, not tied to live module state - drawn in a
-// fixed local coordinate space (178x140) matching the widget's own box
-// size 1:1, no scaling math needed. A first version tried to do this as
-// SVG panel art; reverted because nanosvg doesn't parse <text> at all
-// (same reason the wordmark below is hand-traced path art, and every
-// other label in this file is a widget like this one, not baked into
-// the SVG).
-struct EvoFlowDiagram : TransparentWidget {
-  void triangle(const DrawArgs &args, float x0, float y0, float x1, float y1, float x2, float y2) {
-    nvgBeginPath(args.vg);
-    nvgMoveTo(args.vg, x0, y0);
-    nvgLineTo(args.vg, x1, y1);
-    nvgLineTo(args.vg, x2, y2);
-    nvgClosePath(args.vg);
-    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgFill(args.vg);
-  }
-
-  void drawBox(const DrawArgs &args, float x, float y, float w, float h, const char *label, float fontSize) {
-    nvgBeginPath(args.vg);
-    nvgRoundedRect(args.vg, x, y, w, h, 4.f);
-    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgStrokeWidth(args.vg, 2.f);
-    nvgStroke(args.vg);
-
-    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-    nvgFontSize(args.vg, fontSize);
-    nvgText(args.vg, x + w * 0.5f, y + h * 0.5f, label, nullptr);
-  }
-
-  void line(const DrawArgs &args, float x0, float y0, float x1, float y1) {
-    nvgBeginPath(args.vg);
-    nvgMoveTo(args.vg, x0, y0);
-    nvgLineTo(args.vg, x1, y1);
-    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgStrokeWidth(args.vg, 2.f);
-    nvgStroke(args.vg);
-  }
+// Large stylistic background numeral (1-4) filling most of a pool box,
+// drawn behind that pool's Active/Entropy/Recall/Drift controls (added to
+// the widget tree before them, so they layer on top) rather than competing
+// with them - replaces the small "1"/"2"/"3"/"4" label that used to sit
+// above the Active button. Filled with a solid, opaque pastel tint of that
+// pool's accent color (see poolColors below) - no outline currently.
+struct EvoPoolNumeral : TransparentWidget {
+  std::string text;
+  NVGcolor color;
 
   void draw(const DrawArgs &args) override {
-    // Row 1: POOL -> SPLIT -> MUTATE
-    drawBox(args, 4, 10, 50, 22, "POOL", 10.f);
-    line(args, 54, 21, 63, 21);
-    triangle(args, 63, 21, 57, 17.5f, 57, 24.5f);
-
-    drawBox(args, 64, 10, 50, 22, "SPLIT", 10.f);
-    line(args, 114, 21, 123, 21);
-    triangle(args, 123, 21, 117, 17.5f, 117, 24.5f);
-
-    drawBox(args, 124, 10, 50, 22, "MUTATE", 9.5f);
-
-    // Plain vertical connector, no text - Entropy/Jitter moved below the
-    // whole diagram (see below), which is also what let the loop-back
-    // arrow go back to a simple, uncluttered curve instead of hugging the
-    // canvas edge to dodge words that used to live in this middle band.
-    // KEEP? top edge is y=44 (see below) - the arrow must stop there, not
-    // overshoot through the whole box like the previous y=66 target did
-    // (a leftover from before KEEP?/EVOLVED moved up).
-    line(args, 149, 32, 149, 38);
-    triangle(args, 149, 44, 145.5f, 38, 152.5f, 38);
-
-    // Row 2: KEEP? -> EVOLVED (flow continues right to left), pulled up
-    // close under row 1 now that nothing needs to live between them.
-    drawBox(args, 124, 44, 50, 22, "KEEP?", 10.f);
-    line(args, 124, 55, 115, 55);
-    triangle(args, 115, 55, 121, 51.5f, 121, 58.5f);
-
-    drawBox(args, 61, 44, 53, 22, "EVOLVED", 9.f);
-
-    nvgBeginPath(args.vg);
-    nvgMoveTo(args.vg, 61, 55);
-    nvgBezierTo(args.vg, 25, 55, 15, 45, 25, 32);
-    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgStrokeWidth(args.vg, 2.f);
-    nvgStroke(args.vg);
-    triangle(args, 25, 32, 18.5f, 34.5f, 23, 40);
-
-    // Entropy/Jitter, as full sentence definitions below the whole
-    // flowchart (not squeezed inside it) - what actually drives the
-    // Mutate/Keep step above, since the knob names alone don't explain
-    // that. This is noticeably smaller text than the flowchart itself at
-    // the MetaModule's actual display resolution - a real tradeoff for
-    // fitting real sentences in, flagged rather than hidden.
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
     nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-    nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
+    float fontSize = box.size.y * 0.72f;
+    nvgFontSize(args.vg, fontSize);
+    float cx = box.size.x * 0.5f;
+    float cy = box.size.y * 0.5f;
 
-    nvgFontSize(args.vg, 9.f);
-    nvgText(args.vg, 89, 82, "Entropy", nullptr);
-    nvgFontSize(args.vg, 7.f);
-    nvgText(args.vg, 89, 92, "Sets how much each phrase mutates, and", nullptr);
-    nvgText(args.vg, 89, 101, "how readily changes replace the pattern.", nullptr);
+    // Outline temporarily disabled to preview the numeral without it -
+    // re-enable this block to restore the light-gray stamped outline.
+#if 0
+    const float outlineWidth = fontSize * 0.02f;
+    const int steps = 16;
+    nvgFillColor(args.vg, nvgRGB(0xaa, 0xaa, 0xaa));
+    for (int i = 0; i < steps; i++) {
+      float angle = 6.28318530718f * (float)i / (float)steps;
+      float ox = cx + std::cos(angle) * outlineWidth;
+      float oy = cy + std::sin(angle) * outlineWidth;
+      nvgText(args.vg, ox, oy, text.c_str(), nullptr);
+    }
+#endif
 
-    nvgFontSize(args.vg, 9.f);
-    nvgText(args.vg, 89, 115, "Jitter", nullptr);
-    nvgFontSize(args.vg, 7.f);
-    nvgText(args.vg, 89, 125, "Randomly nudges Entropy each generation,", nullptr);
-    nvgText(args.vg, 89, 134, "so phrases don't evolve in lockstep.", nullptr);
+    nvgFillColor(args.vg, color);
+    nvgText(args.vg, cx, cy, text.c_str(), nullptr);
   }
 };
 
@@ -631,6 +560,30 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float rowAY[2] = {runY, runY + 32.f};           // Active+Entropy row, per pool-grid-row
     const float rowBY[2] = {rowAY[0] + 16.f, rowAY[1] + 16.f};  // Recall+Drift row, per pool-grid-row
 
+    // Pool box bounds (matching res/TheReelPeetEvo.svg's pool1-4 rects,
+    // raw px / 2.9528) for the background numerals below.
+    const float poolRowTop[2] = {8.467f, 42.667f};  // top edge of each pool row (raw y=25, 126)
+    const float poolBoxW = 29.80f;                  // raw width 88
+    const float poolBoxH = 31.6f;                   // raw height ~93-94
+
+    // Large background numerals, added before the per-phrase controls
+    // below so they render behind the knobs/lights, not on top of them.
+    // Solid, fully opaque pastel tints - each pool's accent hue (matching
+    // res/TheReelPeetEvo.svg's pool1-4 fill colors) blended ~55% toward
+    // white, not a transparency blend over the panel.
+    NVGcolor poolColors[4] = {
+      nvgRGB(0xee, 0xae, 0xae), nvgRGB(0x89, 0xa7, 0xe6),
+      nvgRGB(0xee, 0xdd, 0xae), nvgRGB(0xd2, 0xb7, 0xee),
+    };
+    for (int p = 0; p < 4; p++) {
+      auto *numeral = new EvoPoolNumeral;
+      numeral->box.pos = mm2px(Vec(poolColLeft[p % 2], poolRowTop[p / 2]));
+      numeral->box.size = mm2px(Vec(poolBoxW, poolBoxH));
+      numeral->text = std::to_string(p + 1);
+      numeral->color = poolColors[p];
+      addChild(numeral);
+    }
+
     addParam(createParamCentered<LEDButton>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_PARAM));
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
 
@@ -691,7 +644,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         float ctrlX0  = colLeft + 7.f;
         float ctrlX1  = colLeft + 22.f;
 
-        addLabel(std::to_string(p + 1), ctrlX0, rowAY[row] + 4.f, dispW, 9.f);
         addLabel("Entropy", ctrlX1, rowAY[row] + 6.f, dispW, 8.f);
         addLabel("Recall", ctrlX0, rowBY[row] + 2.5f, dispW, 7.f);
         addLabel("Drift", ctrlX1, rowBY[row] + 2.5f, dispW, 7.f);
@@ -703,12 +655,11 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       lenDisplay->value = &module->len;
       addChild(lenDisplay);
 
-      // Fills the open space below the pool grid (raw x=73-251, y=220-360;
-      // poolColLeft[0] is that same raw x=73 left edge in mm).
-      auto *flowDiagram = new EvoFlowDiagram;
-      flowDiagram->box.pos = mm2px(Vec(poolColLeft[0], 74.51f));
-      flowDiagram->box.size = mm2px(Vec(60.27f, 47.41f));
-      addChild(flowDiagram);
+      // The evolution-cycle flowchart (EvoFlowDiagram) that used to fill
+      // this space has been removed - reserved for a scale-quantizer
+      // control instead. Open area: raw x=73-251, y=220-360
+      // (poolColLeft[0] is that same raw x=73 left edge, in mm), i.e.
+      // mm2px(Vec(poolColLeft[0], 74.51f)) sized mm2px(Vec(60.27f, 47.41f)).
     }
   }
 };
