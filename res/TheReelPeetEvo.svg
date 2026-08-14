@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg
-   width="258"
+   width="286"
    height="380"
-   viewBox="0 0 258 380"
+   viewBox="0 0 286 380"
    version="1.1"
    id="svg1"
    xmlns="http://www.w3.org/2000/svg">
@@ -11,70 +11,51 @@
       <stop offset="0%" stop-color="#d0d0d0" id="stopEvo1" />
       <stop offset="100%" stop-color="#b8b8b8" id="stopEvo2" />
     </linearGradient>
-    <!-- Quantizer background gradients: each fades from the color of the
-         pool at the TOP of its column to the pool at the BOTTOM, since
-         each quantizer governs both (Left = pools 1&3, Right = pools 2&4)
-         when both quantizers are in use - see quantSet in the .cpp. -->
-    <linearGradient id="quantGradL" x1="0" y1="223" x2="0" y2="372" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#d94a4a" />
-      <stop offset="100%" stop-color="#d9b44a" />
-    </linearGradient>
-    <linearGradient id="quantGradR" x1="0" y1="223" x2="0" y2="372" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#4a78d9" />
-      <stop offset="100%" stop-color="#9a5fd9" />
-    </linearGradient>
   </defs>
 
   <!-- Main panel background -->
-  <rect id="panel" x="0" y="0" width="258" height="380" fill="url(#bgGradEvo)" />
+  <rect id="panel" x="0" y="0" width="286" height="380" fill="url(#bgGradEvo)" />
 
-  <!-- Global/shared playback lane — white/neutral, so it reads as
-       categorically different from the 4 colored pools (shared chassis vs.
-       identity color), not as a 5th competing hue. Briefly tried green;
-       reverted after a full color-scheme review favored keeping color
-       meaning reserved for the pools alone.
+  <!-- Global/shared playback lane — red, matching PhrasingModuleMM/res/
+       Phrasing.svg's own red (#d94a4a) exactly, per a full-palette pass
+       referencing that module's colors throughout this panel. Top edge
+       (y=25) now matches the pool columns' top instead of sitting higher
+       at y=12; bottom edge (368) unchanged, so height shrank to match.
        Panel narrowed from 280 to 258 (trimmed excess left/right margin,
        keeping a small breathing gap on both sides) - everything below
        shifted left 7 raw units to close up the left margin, and the panel's
-       right edge trimmed to leave a matching small margin after pool2/4. -->
-  <rect x="7" y="12" width="56" height="356" rx="7" ry="7"
-        fill="#ffffff" opacity="0.25" stroke="#ffffff" stroke-opacity="0.7" stroke-width="1.5" id="laneLeft" />
+       right edge trimmed to leave a matching small margin after the right
+       column. Widened to 84 (from 56) to match the pool columns' own
+       width exactly, per feedback - required widening the whole panel
+       from 258 to 286 raw units (all 3 columns + margins + gaps no longer
+       fit in 258 once all 3 are equal width), so everything from the Left
+       quantizer column rightward shifted +28 raw units to make room (see
+       poolColL/poolColR below, and the wordmark path data, which was
+       shifted with a script rather than hand-edited for the same reason
+       noted below). -->
+  <rect x="7" y="25" width="84" height="343" rx="7" ry="7"
+        fill="#d94a4a" opacity="0.18" stroke="#d94a4a" stroke-opacity="0.55" stroke-width="1.5" id="laneLeft" />
 
-  <!-- Center seam, between the shared lane and the phrase-pool section -->
-  <rect x="68" y="0" width="1" height="380" fill="#000000" opacity="0.12" id="centerSeam" />
+  <!-- Phrase pools 1&3 and the Left quantizer (src/TheReelPeetEvo.cpp
+       NOTE_PARAM_L, which governs those same two phrases) merged into one
+       continuous column - they're already the same functional group, so
+       one box reads more honestly than 3 separate ones implying 3 separate
+       things. Blue, matching Phrasing.svg's blue (#4a78d9). Spans from
+       pool1's original top (y=25) down through the old quantizer bottom
+       (y=365). No seam line against the lane to its left anymore (removed
+       centerSeam) - the lane's own red vs. this blue already reads as a
+       clear boundary without one. -->
+  <rect x="101" y="25" width="84" height="340" rx="7" ry="7"
+        fill="#4a78d9" opacity="0.18" stroke="#4a78d9" stroke-opacity="0.55" stroke-width="1.5" id="poolColL" />
 
-  <!-- 4 phrase pools, each a distinct bordered square to set them apart.
-       Colors: pool1/pool2 are TheReelPeet-dyn's actual Lane A/Lane B colors
-       (red/blue); pool3 is the gold this module already used; pool4 is a
-       purple in the same family (dyn and Phrasing don't have a real 4th
-       color to pull from). Arranged as a compact 2x2 grid (pool1 top-left,
-       pool2 top-right, pool3 bottom-left, pool4 bottom-right), sized to hug
-       their control content (Active + Entropy on one row, Recall + Drift
-       on the next) rather than spanning the full panel height. -->
-  <rect x="73"  y="25"  width="88" height="93" rx="7" ry="7"
-        fill="#d94a4a" opacity="0.18" stroke="#d94a4a" stroke-opacity="0.55" stroke-width="1.5" id="pool1" />
-  <rect x="163" y="25"  width="88" height="93" rx="7" ry="7"
-        fill="#4a78d9" opacity="0.18" stroke="#4a78d9" stroke-opacity="0.55" stroke-width="1.5" id="pool2" />
-  <rect x="73"  y="120" width="88" height="94" rx="7" ry="7"
-        fill="#d9b44a" opacity="0.18" stroke="#d9b44a" stroke-opacity="0.55" stroke-width="1.5" id="pool3" />
-  <rect x="163" y="120" width="88" height="94" rx="7" ry="7"
-        fill="#9a5fd9" opacity="0.18" stroke="#9a5fd9" stroke-opacity="0.55" stroke-width="1.5" id="pool4" />
-
-  <!-- Quantizer backgrounds, gradient-filled to reflect which pools each
-       column governs (Left = pools 1&3, Right = pools 2&4 -
-       src/TheReelPeetEvo.cpp NOTE_PARAM_L/R): top-of-square starts in the
-       upper pool's color, fading to the lower pool's color by the bottom.
-       Same width/x as pool3/pool4 respectively, so they read as a direct
-       continuation of the pool grid columns above. No stroke (unlike
-       pool1-4) - with the gradient fill already doing the color work, an
-       outline here read as visual clutter rather than definition. Top/
-       bottom margins sized with the piano buttons' own radius in mind
-       (see whiteTopY/whitePitchY in the .cpp) so the topmost (B) and
-       bottommost (C) buttons land fully inside, not overlapping the edge. -->
-  <rect x="73" y="216" width="88" height="149" rx="7" ry="7"
-        fill="url(#quantGradL)" opacity="0.18" id="quantizerBgL" />
-  <rect x="163" y="216" width="88" height="149" rx="7" ry="7"
-        fill="url(#quantGradR)" opacity="0.18" id="quantizerBgR" />
+  <!-- Same idea, phrases 2&4 + the Right quantizer (NOTE_PARAM_R). Orange
+       (#d9824a, roughly midway in hue between the lane's red and this
+       module's gold) - purple sat too close to the Left column's blue on
+       the color wheel to read as clearly distinct; green and gold were
+       tried earlier too (green clashed with the quantizer's own green
+       LEDs, gold didn't land as "yellow"). -->
+  <rect x="195" y="25" width="84" height="340" rx="7" ry="7"
+        fill="#d9824a" opacity="0.18" stroke="#d9824a" stroke-opacity="0.55" stroke-width="1.5" id="poolColR" />
 
   <!-- The evolution-cycle flowchart (POOL/CROSS/MUTATE/KEEP?/EVOLVED, with
        Entropy+Jitter labeled) lives in src/TheReelPeetEvo.cpp as a C++
@@ -99,11 +80,11 @@
        "first m is absolute, later m is relative" SVG rule (a prior
        hand-edit that missed this garbled the wordmark). -->
   <path
-     d="M 81.544819 13.191672 h -3.602095 v 8.890132 h -1.340629 v -8.890132 h -3.602095 v -1.191671 h 8.544818 z m 12.121174 8.890132 h -1.340629 v -4.935953 h -5.030745 v 4.935953 H 85.953990 v -10.081803 h 1.340629 v 3.954180 h 5.030745 v -3.954180 h 1.340629 z m 12.405550 0.000000 H 99.429335 v -10.081803 h 6.642208 v 1.191671 h -5.301578 v 2.762509 h 5.301578 v 1.191670 h -5.301578 v 3.744283 h 5.301578 z m 13.522742 0.000000 h -1.740110 l -3.371885 -4.008346 h -1.889069 v 4.008346 h -1.340629 v -10.081803 h 2.823447 q 0.914065 0.000000 1.523441 0.121875 q 0.609378 0.115102 1.096879 0.419792 q 0.548439 0.345314 0.853128 0.873440 q 0.311459 0.521356 0.311459 1.327088 q 0.000000 1.090107 -0.548439 1.828130 q -0.548440 0.731253 -1.509901 1.103649 z m -3.134906 -7.244814 q 0.000000 -0.433335 -0.155730 -0.765107 q -0.148959 -0.338542 -0.501043 -0.568751 q -0.291147 -0.196355 -0.690628 -0.270834 q -0.399481 -0.081250 -0.941149 -0.081250 h -1.577609 v 3.805220 h 1.354171 q 0.636460 0.000000 1.110420 -0.108329 q 0.473961 -0.115102 0.805732 -0.419793 q 0.304689 -0.284376 0.446876 -0.650001 q 0.148959 -0.372398 0.148959 -0.941149 z m 14.132117 7.244814 h -6.642208 v -10.081803 h 6.642208 v 1.191671 h -5.301579 v 2.762509 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.823258 0.000000 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 137.113176 v 2.762509 h 5.301578 v 1.191670 H 137.113176 v 3.744283 h 5.301578 z m 11.559196 0.000000 h -6.378145 v -10.081803 h 1.340629 v 8.890133 h 5.037516 z m 10.990441 -7.034918 q 0.000000 0.670314 -0.236980 1.245837 q -0.230209 0.568751 -0.650003 0.988545 q -0.521356 0.521356 -1.232296 0.785420 q -0.710939 0.257292 -1.794276 0.257292 h -1.340630 v 3.757824 h -1.340629 v -10.081803 h 2.735425 q 0.907295 0.000000 1.536985 0.155730 q 0.629689 0.148959 1.117191 0.473961 q 0.575522 0.385939 0.886981 0.961462 q 0.318231 0.575522 0.318231 1.455734 z m -1.394796 0.033852 q 0.000000 -0.521355 -0.182814 -0.907293 q -0.182813 -0.385939 -0.555209 -0.629690 q -0.325001 -0.209897 -0.744795 -0.297917 q -0.399481 -0.094770 -1.049482 -0.094770 h -1.327088 v 4.028658 h 1.130734 q 0.812503 0.000000 1.320316 -0.142187 q 0.507814 -0.148959 0.826045 -0.467190 q 0.318230 -0.325000 0.446876 -0.683856 q 0.135417 -0.358855 0.135417 -0.805732 z m 12.859196 7.001064 h -6.642208 v -10.081803 h 6.642208 v 1.191671 h -5.301582 v 2.762509 h 5.301582 v 1.191670 h -5.301582 v 3.744283 h 5.301582 z m 11.823253 0.000000 h -6.642207 v -10.081803 h 6.642207 v 1.191671 H 182.950461 v 2.762509 h 5.301582 v 1.191670 H 182.950461 v 3.744283 h 5.301582 z m 12.371697 -8.890132 h -3.602092 v 8.890132 h -1.340625 v -8.890132 h -3.602092 v -1.191671 h 8.544809 z"
+     d="M 86.891819 13.191672 h -3.602095 v 8.890132 h -1.340629 v -8.890132 h -3.602095 v -1.191671 h 8.544818 z m 12.121174 8.890132 h -1.340629 v -4.935953 h -5.030745 v 4.935953 H 91.300990 v -10.081803 h 1.340629 v 3.954180 h 5.030745 v -3.954180 h 1.340629 z m 12.405550 0.000000 H 104.776335 v -10.081803 h 6.642208 v 1.191671 h -5.301578 v 2.762509 h 5.301578 v 1.191670 h -5.301578 v 3.744283 h 5.301578 z m 13.522742 0.000000 h -1.740110 l -3.371885 -4.008346 h -1.889069 v 4.008346 h -1.340629 v -10.081803 h 2.823447 q 0.914065 0.000000 1.523441 0.121875 q 0.609378 0.115102 1.096879 0.419792 q 0.548439 0.345314 0.853128 0.873440 q 0.311459 0.521356 0.311459 1.327088 q 0.000000 1.090107 -0.548439 1.828130 q -0.548440 0.731253 -1.509901 1.103649 z m -3.134906 -7.244814 q 0.000000 -0.433335 -0.155730 -0.765107 q -0.148959 -0.338542 -0.501043 -0.568751 q -0.291147 -0.196355 -0.690628 -0.270834 q -0.399481 -0.081250 -0.941149 -0.081250 h -1.577609 v 3.805220 h 1.354171 q 0.636460 0.000000 1.110420 -0.108329 q 0.473961 -0.115102 0.805732 -0.419793 q 0.304689 -0.284376 0.446876 -0.650001 q 0.148959 -0.372398 0.148959 -0.941149 z m 14.132117 7.244814 h -6.642208 v -10.081803 h 6.642208 v 1.191671 h -5.301579 v 2.762509 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.823258 0.000000 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 142.460176 v 2.762509 h 5.301578 v 1.191670 H 142.460176 v 3.744283 h 5.301578 z m 11.559196 0.000000 h -6.378145 v -10.081803 h 1.340629 v 8.890133 h 5.037516 z m 10.990441 -7.034918 q 0.000000 0.670314 -0.236980 1.245837 q -0.230209 0.568751 -0.650003 0.988545 q -0.521356 0.521356 -1.232296 0.785420 q -0.710939 0.257292 -1.794276 0.257292 h -1.340630 v 3.757824 h -1.340629 v -10.081803 h 2.735425 q 0.907295 0.000000 1.536985 0.155730 q 0.629689 0.148959 1.117191 0.473961 q 0.575522 0.385939 0.886981 0.961462 q 0.318231 0.575522 0.318231 1.455734 z m -1.394796 0.033852 q 0.000000 -0.521355 -0.182814 -0.907293 q -0.182813 -0.385939 -0.555209 -0.629690 q -0.325001 -0.209897 -0.744795 -0.297917 q -0.399481 -0.094770 -1.049482 -0.094770 h -1.327088 v 4.028658 h 1.130734 q 0.812503 0.000000 1.320316 -0.142187 q 0.507814 -0.148959 0.826045 -0.467190 q 0.318230 -0.325000 0.446876 -0.683856 q 0.135417 -0.358855 0.135417 -0.805732 z m 12.859196 7.001064 h -6.642208 v -10.081803 h 6.642208 v 1.191671 h -5.301582 v 2.762509 h 5.301582 v 1.191670 h -5.301582 v 3.744283 h 5.301582 z m 11.823253 0.000000 h -6.642207 v -10.081803 h 6.642207 v 1.191671 H 188.297461 v 2.762509 h 5.301582 v 1.191670 H 188.297461 v 3.744283 h 5.301582 z m 12.371697 -8.890132 h -3.602092 v 8.890132 h -1.340625 v -8.890132 h -3.602092 v -1.191671 h 8.544809 z"
      style="fill:#000000"
      aria-label="THEREELPEET" />
   <path
-     d="M 83.227258 14.570311 h -3.602095 v 8.890132 h -1.340629 v -8.890132 h -3.602096 v -1.191671 h 8.544819 z m 12.121174 8.890132 h -1.340629 v -4.935953 h -5.030745 v 4.935953 h -1.340629 v -10.081803 h 1.340629 V 17.332820 h 5.030745 v -3.954180 h 1.340629 z m 12.405550 0.000000 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 102.452403 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 13.522740 0.000000 H 119.536613 L 116.164728 19.452097 H 114.275660 v 4.008346 h -1.340630 v -10.081803 h 2.823447 q 0.914065 0.000000 1.523443 0.121875 q 0.609376 0.115102 1.096879 0.419792 q 0.548439 0.345314 0.853128 0.873441 q 0.311459 0.521355 0.311459 1.327087 q 0.000000 1.090107 -0.548440 1.828132 q -0.548439 0.731251 -1.509901 1.103649 z m -3.134906 -7.244814 q 0.000000 -0.433334 -0.155730 -0.765107 q -0.148958 -0.338542 -0.501043 -0.568751 q -0.291147 -0.196355 -0.690626 -0.270834 q -0.399481 -0.081250 -0.941149 -0.081250 H 114.275660 v 3.805220 h 1.354171 q 0.636459 0.000000 1.110420 -0.108329 q 0.473959 -0.115102 0.805732 -0.419793 q 0.304688 -0.284376 0.446876 -0.650001 q 0.148958 -0.372398 0.148958 -0.941149 z m 14.132118 7.244814 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 126.972356 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.823258 0.000000 H 137.454985 v -10.081803 h 6.642208 v 1.191671 H 138.795614 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.559196 0.000000 h -6.378146 v -10.081803 h 1.340630 v 8.890133 h 5.037516 z m 10.990441 -7.034918 q 0.000000 0.670314 -0.236981 1.245837 q -0.230209 0.568753 -0.650001 0.988545 q -0.521356 0.521356 -1.232296 0.785420 q -0.710940 0.257292 -1.794277 0.257292 h -1.340629 v 3.757824 h -1.340629 v -10.081803 h 2.735425 q 0.907295 0.000000 1.536985 0.155730 q 0.629689 0.148959 1.117190 0.473961 q 0.575523 0.385939 0.886982 0.961462 q 0.318231 0.575522 0.318231 1.455734 z m -1.394797 0.033852 q 0.000000 -0.521356 -0.182813 -0.907295 q -0.182813 -0.385939 -0.555211 -0.629690 q -0.325000 -0.209897 -0.744793 -0.297917 q -0.413022 -0.094796 -1.049482 -0.094796 h -1.327088 v 4.028658 h 1.130734 q 0.812501 0.000000 1.320316 -0.142187 q 0.507814 -0.148959 0.826043 -0.467189 q 0.318231 -0.325001 0.446876 -0.683857 q 0.135417 -0.358855 0.135417 -0.805731 z m 12.859192 7.001063 h -6.642207 v -10.081803 h 6.642207 v 1.191671 h -5.301569 v 2.762509 h 5.301569 v 1.191670 h -5.301569 v 3.744283 h 5.301569 z m 11.823253 0.000000 h -6.642207 v -10.081803 h 6.642207 v 1.191671 h -5.301569 v 2.762509 h 5.301569 v 1.191670 h -5.301569 v 3.744283 h 5.301569 z m 12.371710 -8.890132 h -3.602092 v 8.890132 h -1.340638 v -8.890132 h -3.602092 v -1.191671 h 8.544822 z"
+     d="M 88.574258 14.570311 h -3.602095 v 8.890132 h -1.340629 v -8.890132 h -3.602096 v -1.191671 h 8.544819 z m 12.121174 8.890132 h -1.340629 v -4.935953 h -5.030745 v 4.935953 h -1.340629 v -10.081803 h 1.340629 V 17.332820 h 5.030745 v -3.954180 h 1.340629 z m 12.405550 0.000000 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 107.799403 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 13.522740 0.000000 H 124.883613 L 121.511728 19.452097 H 119.622660 v 4.008346 h -1.340630 v -10.081803 h 2.823447 q 0.914065 0.000000 1.523443 0.121875 q 0.609376 0.115102 1.096879 0.419792 q 0.548439 0.345314 0.853128 0.873441 q 0.311459 0.521355 0.311459 1.327087 q 0.000000 1.090107 -0.548440 1.828132 q -0.548439 0.731251 -1.509901 1.103649 z m -3.134906 -7.244814 q 0.000000 -0.433334 -0.155730 -0.765107 q -0.148958 -0.338542 -0.501043 -0.568751 q -0.291147 -0.196355 -0.690626 -0.270834 q -0.399481 -0.081250 -0.941149 -0.081250 H 119.622660 v 3.805220 h 1.354171 q 0.636459 0.000000 1.110420 -0.108329 q 0.473959 -0.115102 0.805732 -0.419793 q 0.304688 -0.284376 0.446876 -0.650001 q 0.148958 -0.372398 0.148958 -0.941149 z m 14.132118 7.244814 h -6.642208 v -10.081803 h 6.642208 v 1.191671 H 132.319356 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.823258 0.000000 H 142.801985 v -10.081803 h 6.642208 v 1.191671 H 144.142614 V 17.332820 h 5.301579 v 1.191670 h -5.301579 v 3.744283 h 5.301579 z m 11.559196 0.000000 h -6.378146 v -10.081803 h 1.340630 v 8.890133 h 5.037516 z m 10.990441 -7.034918 q 0.000000 0.670314 -0.236981 1.245837 q -0.230209 0.568753 -0.650001 0.988545 q -0.521356 0.521356 -1.232296 0.785420 q -0.710940 0.257292 -1.794277 0.257292 h -1.340629 v 3.757824 h -1.340629 v -10.081803 h 2.735425 q 0.907295 0.000000 1.536985 0.155730 q 0.629689 0.148959 1.117190 0.473961 q 0.575523 0.385939 0.886982 0.961462 q 0.318231 0.575522 0.318231 1.455734 z m -1.394797 0.033852 q 0.000000 -0.521356 -0.182813 -0.907295 q -0.182813 -0.385939 -0.555211 -0.629690 q -0.325000 -0.209897 -0.744793 -0.297917 q -0.413022 -0.094796 -1.049482 -0.094796 h -1.327088 v 4.028658 h 1.130734 q 0.812501 0.000000 1.320316 -0.142187 q 0.507814 -0.148959 0.826043 -0.467189 q 0.318231 -0.325001 0.446876 -0.683857 q 0.135417 -0.358855 0.135417 -0.805731 z m 12.859192 7.001063 h -6.642207 v -10.081803 h 6.642207 v 1.191671 h -5.301569 v 2.762509 h 5.301569 v 1.191670 h -5.301569 v 3.744283 h 5.301569 z m 11.823253 0.000000 h -6.642207 v -10.081803 h 6.642207 v 1.191671 h -5.301569 v 2.762509 h 5.301569 v 1.191670 h -5.301569 v 3.744283 h 5.301569 z m 12.371710 -8.890132 h -3.602092 v 8.890132 h -1.340638 v -8.890132 h -3.602092 v -1.191671 h 8.544822 z"
      style="fill:#ff0000"
      aria-label="THEREELPEET" />
 </svg>

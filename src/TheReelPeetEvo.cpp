@@ -635,8 +635,20 @@ struct EvoPoolNumeral : TransparentWidget {
   NVGcolor color;
 
   void draw(const DrawArgs &args) override {
-    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
-    float fontSize = box.size.y * 0.72f;
+    // A real bold weight, not the blur-based fake-bold this file uses
+    // elsewhere (EvoStaticLabel) - that trick just softens edges and reads
+    // as fuzzy, not genuinely thick, at this size. Nunito-Bold ships with
+    // Rack itself (and with the MetaModule SDK, firmware v2.0+) as a
+    // system font, so no font file needs to be bundled with this plugin.
+    // loadFont() caches by path internally, so calling it every draw() is
+    // the normal Rack idiom, not a per-frame disk read. (A DSEG7 seven-
+    // segment digital-display font was tried here too - reverted, it read
+    // as a calculator-clock look rather than "thick".)
+    std::shared_ptr<Font> boldFont = APP->window->loadFont(asset::system("res/fonts/Nunito-Bold.ttf"));
+    nvgFontFaceId(args.vg, boldFont ? boldFont->handle : APP->window->uiFont->handle);
+    // Bumped up from 0.72 - digit glyphs are narrower than the box is
+    // tall, so there's real headroom before width becomes the limit.
+    float fontSize = box.size.y * 0.85f;
     nvgFontSize(args.vg, fontSize);
     float cx = box.size.x * 0.5f;
     float cy = box.size.y * 0.5f;
@@ -668,7 +680,19 @@ struct EvoPoolNumeral : TransparentWidget {
     }
 #endif
 
+    // Beyond Nunito-Bold's own weight, stamp the same solid fill at several
+    // tiny offsets around center before the final centered draw - this
+    // dilates the strokes further (a standard faux-extra-bold technique)
+    // while staying crisp, unlike nvgFontBlur which just softens edges.
     nvgFillColor(args.vg, color);
+    const float dilate = fontSize * 0.015f;
+    const int dilateSteps = 8;
+    for (int i = 0; i < dilateSteps; i++) {
+      float angle = 6.28318530718f * (float)i / (float)dilateSteps;
+      float ox = cx + std::cos(angle) * dilate;
+      float oy = baselineY + std::sin(angle) * dilate;
+      nvgText(args.vg, ox, oy, text.c_str(), nullptr);
+    }
     nvgText(args.vg, cx, baselineY, text.c_str(), nullptr);
   }
 };
@@ -724,21 +748,22 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
     addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-    // Left lane = shared/global playback controls. Panel narrowed (280->258
-    // raw), trimming excess left/right margin while keeping a small gap on
-    // both sides - laneXL shifted from 14 to match the lane's new raw
-    // x=7 position (was x=14).
-    const float laneXL = 11.629f;
+    // Left lane = shared/global playback controls, horizontally centered
+    // in the lane box (raw x=7 to 91, center raw x=49 -> 16.596mm) - was
+    // left off-center at 11.629mm from when the lane was still only
+    // 56 raw px wide (before it was widened to 84 to match the pool
+    // columns).
+    const float laneXL = 16.596f;
     const float cvDX   = 4.5f;
 
     const float runY      = 15.5f;
     const float lengthY   = 33.f;
     const float dispY     = 37.f;
     // BPM knob is gone - the module is externally clocked now (see Clock
-    // In below). Jitter and Rise/Fall are evenly spaced (23mm steps)
-    // between Length and the output row, instead of clustering near the
-    // top and leaving a big empty gap above the outputs.
-    const float jitterY   = 56.f;
+    // In below). Jitter and Rise/Fall were evenly spaced (23mm steps)
+    // between Length and the output row; Jitter (and its label, which
+    // follows it) then nudged down 4mm further per feedback.
+    const float jitterY   = 60.f;
     const float riseFallY = 79.f;
     // The CV row (outputs + new Clock In) stays anchored near the bottom
     // rather than following Jitter/Rise/Fall up, leaving open space above it.
@@ -758,7 +783,10 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // sub-columns), Recall+Drift share a row below in the same two
     // sub-columns (so Active/Recall align vertically, and Entropy/Drift
     // align vertically).
-    const float poolColLeft[2] = {24.723f, 55.202f};      // left edge of each pool column (raw x=73, 163)
+    // Panel widened from 258 to 286 raw px to let the red lane match the
+    // pool columns' own width (see laneLeft in the SVG) - both columns
+    // shifted +28 raw px right to make room (old raw x=73/167 -> 101/195).
+    const float poolColLeft[2] = {34.206f, 66.033f};      // left edge of each pool column (raw x=101, 195)
     // Row 2 (pool3/4) is lifted 6 raw px (2.032mm) closer to row 1, closing
     // up the gap under it to make room for the quantizer's own grey square
     // below - see the matching pool3/pool4 rect y in the SVG (126 -> 120).
@@ -769,17 +797,19 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // Pool box bounds (matching res/TheReelPeetEvo.svg's pool1-4 rects,
     // raw px / 2.9528) for the background numerals below.
     const float poolRowTop[2] = {8.467f, 42.667f - row2Lift};  // top edge of each pool row (raw y=25, 120)
-    const float poolBoxW = 29.80f;                  // raw width 88
+    const float poolBoxW = 28.451f;                 // raw width 84
     const float poolBoxH = 31.6f;                   // raw height ~93-94
 
     // Large background numerals, added before the per-phrase controls
     // below so they render behind the knobs/lights, not on top of them.
-    // Solid, fully opaque pastel tints - each pool's accent hue (matching
-    // res/TheReelPeetEvo.svg's pool1-4 fill colors) blended ~55% toward
-    // white, not a transparency blend over the panel.
+    // Solid, fully opaque pastel tints - each column's own color (blue for
+    // 1&3, orange for 2&4 - see poolColL/poolColR in the SVG) blended
+    // toward white. Blue nudged from 25% to 35% now that the numerals are
+    // bigger/bolder and read heavier at the same color; orange left at
+    // 50% since that one wasn't flagged.
     NVGcolor poolColors[4] = {
-      nvgRGB(0xee, 0xae, 0xae), nvgRGB(0x89, 0xa7, 0xe6),
-      nvgRGB(0xee, 0xdd, 0xae), nvgRGB(0xd2, 0xb7, 0xee),
+      nvgRGB(0x89, 0xa7, 0xe6), nvgRGB(0xec, 0xc1, 0xa5),
+      nvgRGB(0x89, 0xa7, 0xe6), nvgRGB(0xec, 0xc1, 0xa5),
     };
     for (int p = 0; p < 4; p++) {
       auto *numeral = new EvoPoolNumeral;
@@ -834,8 +864,8 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(blackX, by)), module, lightBase + blackSemis[i]));
       }
     };
-    addPianoColumn(poolColLeft[0] + 14.9f, TheReelPeetEvo::NOTE_PARAM_L, TheReelPeetEvo::NOTE_LIGHT_L);
-    addPianoColumn(poolColLeft[1] + 14.9f, TheReelPeetEvo::NOTE_PARAM_R, TheReelPeetEvo::NOTE_LIGHT_R);
+    addPianoColumn(poolColLeft[0] + 14.226f, TheReelPeetEvo::NOTE_PARAM_L, TheReelPeetEvo::NOTE_LIGHT_L);
+    addPianoColumn(poolColLeft[1] + 14.226f, TheReelPeetEvo::NOTE_PARAM_R, TheReelPeetEvo::NOTE_LIGHT_R);
 
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
