@@ -39,10 +39,21 @@
         fill="#d94a4a" opacity="0.18" stroke="#d94a4a" stroke-opacity="0.55" stroke-width="1.5" id="pool1" />
   <rect x="163" y="25"  width="88" height="93" rx="7" ry="7"
         fill="#4a78d9" opacity="0.18" stroke="#4a78d9" stroke-opacity="0.55" stroke-width="1.5" id="pool2" />
-  <rect x="73"  y="126" width="88" height="94" rx="7" ry="7"
+  <rect x="73"  y="120" width="88" height="94" rx="7" ry="7"
         fill="#d9b44a" opacity="0.18" stroke="#d9b44a" stroke-opacity="0.55" stroke-width="1.5" id="pool3" />
-  <rect x="163" y="126" width="88" height="94" rx="7" ry="7"
+  <rect x="163" y="120" width="88" height="94" rx="7" ry="7"
         fill="#9a5fd9" opacity="0.18" stroke="#9a5fd9" stroke-opacity="0.55" stroke-width="1.5" id="pool4" />
+
+  <!-- Quantizer background, grey to set the two piano-key note-toggle
+       columns (src/TheReelPeetEvo.cpp, NOTE_PARAM_L/R) apart from the
+       phrase pools above, same visual treatment as pool1-4. Spans the
+       same width as pool3+pool4 combined; pool3/4 were lifted 6px (y
+       126->120) to close the gap and make room for this. Top/bottom
+       margins sized with the piano buttons' own radius in mind (see
+       whiteTopY/whitePitchY in the .cpp) so the topmost (B) and
+       bottommost (C) buttons land fully inside, not overlapping the edge. -->
+  <rect x="73" y="223" width="178" height="149" rx="7" ry="7"
+        fill="#888888" opacity="0.18" stroke="#888888" stroke-opacity="0.55" stroke-width="1.5" id="quantizerBg" />
 
   <!-- The evolution-cycle flowchart (POOL/CROSS/MUTATE/KEEP?/EVOLVED, with
        Entropy+Jitter labeled) lives in src/TheReelPeetEvo.cpp as a C++

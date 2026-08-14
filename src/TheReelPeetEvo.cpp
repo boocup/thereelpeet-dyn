@@ -63,6 +63,23 @@ using namespace rack::ui;
 // Each phrase also has a Drift light: it flashes red the instant that
 // phrase's pool actually gets replaced (persist check passing), then
 // decays like a hardware peak/clip LED (see mutationFlash).
+//
+// Scale quantization is applied only at playback (see heldCV in process()),
+// never to master/pool/poolGenesis themselves - genetics keep evolving in
+// continuous voltage space (the "genotype"); only the note actually played
+// each step (the "phenotype") gets snapped to whichever notes are active.
+// That way toggling notes on/off can't disturb the mutation/crossover math,
+// and changing the selection live just re-quantizes whatever's already
+// there.
+//
+// Rather than a preset scale-name list, this is 12 individual per-semitone
+// toggles (Intellijel Scales-style) - the user builds "C Major" or
+// "Bb Pentatonic Minor" etc. by lighting up the notes themselves, same as
+// they already do on that hardware. There's deliberately no key/root knob:
+// the toggles ARE the key, visibly, since C is always semitone 0.
+static const char *kNoteNames[12] = {
+  "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+};
 
 struct TheReelPeetEvo : Module {
   enum ParamId {
@@ -73,7 +90,12 @@ struct TheReelPeetEvo : Module {
     FALL_PARAM,
     ACTIVE_PARAM,                        // ACTIVE_PARAM + 0..3
     ENTROPY_PARAM = ACTIVE_PARAM + 4,    // ENTROPY_PARAM + 0..3
-    PARAMS_LEN = ENTROPY_PARAM + 4
+    // Two independent quantizers, matching the pool grid's left/right
+    // columns: L governs phrases 1&3 (poolColLeft[0]), R governs
+    // phrases 2&4 (poolColLeft[1]) - see quantSet selection in process().
+    NOTE_PARAM_L = ENTROPY_PARAM + 4,     // NOTE_PARAM_L + 0..11, one per semitone (C..B)
+    NOTE_PARAM_R = NOTE_PARAM_L + 12,     // NOTE_PARAM_R + 0..11
+    PARAMS_LEN = NOTE_PARAM_R + 12
   };
   enum InputId { CLOCK_INPUT, INPUTS_LEN };
   enum OutputId { OUT_OUTPUT, ENV_OUTPUT, OUTPUTS_LEN };
@@ -82,7 +104,9 @@ struct TheReelPeetEvo : Module {
     ACTIVE_LIGHT,                      // ACTIVE_LIGHT + 0..3
     RECALL_LIGHT = ACTIVE_LIGHT + 4,   // RECALL_LIGHT + 0..3
     DRIFT_LIGHT = RECALL_LIGHT + 4,    // DRIFT_LIGHT + 0..3
-    LIGHTS_LEN = DRIFT_LIGHT + 4
+    NOTE_LIGHT_L = DRIFT_LIGHT + 4,    // NOTE_LIGHT_L + 0..11
+    NOTE_LIGHT_R = NOTE_LIGHT_L + 12,  // NOTE_LIGHT_R + 0..11
+    LIGHTS_LEN = NOTE_LIGHT_R + 12
   };
   enum EnvPhase { ENV_IDLE, ENV_ATTACK, ENV_DECAY };
 
@@ -93,6 +117,16 @@ struct TheReelPeetEvo : Module {
   float envLevel = 0.f;
   int envPhase = ENV_IDLE;
   int len = 8;
+  // Which of the 12 semitones (C..B) each quantizer treats as in-scale -
+  // see NOTE_PARAM_L/R. Both default to all off (quantizer disabled, CV
+  // passed through unquantized - see quantizeToActiveNotes) so adding this
+  // feature doesn't change any existing patch's sound until notes are
+  // actually toggled on. Which phrases each set governs is dynamic (see
+  // quantSet in process()): normally L governs phrases 1&3 and R governs
+  // 2&4, but if only one side has any notes active, that side alone
+  // governs all 4 phrases and the empty side is ignored entirely.
+  bool noteActiveL[12] = {false, false, false, false, false, false, false, false, false, false, false, false};
+  bool noteActiveR[12] = {false, false, false, false, false, false, false, false, false, false, false, false};
 
   float master[16];
   float pool[4][16];
@@ -104,11 +138,19 @@ struct TheReelPeetEvo : Module {
   float phraseTimer = 0.f;
   int phrasesPlayedThisRound = 0;
   float mutationFlash[4] = {0.f, 0.f, 0.f, 0.f};  // decays after a phrase's pool actually gets replaced
+  // Flashes the just-played note's light on top of its steady "enabled"
+  // brightness, decaying like mutationFlash above - lets you see which
+  // in-scale note actually got picked each step, not just which notes are
+  // toggled on.
+  float playFlashL[12] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+  float playFlashR[12] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
   float clockPeriod = 0.5f;    // measured time between the last two Clock In pulses, drives Phrase Duration
   float timeSinceClock = 0.f;  // time since the last Clock In pulse; becomes the next clockPeriod
 
   dsp::SchmittTrigger onTrig;
   dsp::SchmittTrigger activeTrig[4];
+  dsp::SchmittTrigger noteTrigL[12];
+  dsp::SchmittTrigger noteTrigR[12];
   dsp::SchmittTrigger clockTrig;
 
   TheReelPeetEvo() {
@@ -121,6 +163,20 @@ struct TheReelPeetEvo : Module {
                 "%", 0.f, 100.f);
     configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
     configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
+
+    // Note toggles: momentary buttons, same pattern as ACTIVE_PARAM below -
+    // the button param itself is just an edge source (see noteTrigL/R in
+    // process()); the actual on/off state lives in noteActiveL/R.
+    for (int i = 0; i < 12; i++) {
+      configParam(NOTE_PARAM_L + i, 0.f, 1.f, 0.f,
+                  std::string("Note ") + kNoteNames[i] +
+                      " (Left quantizer, optional: phrases 1&3, or all 4 if Right is off)");
+      configLight(NOTE_LIGHT_L + i, std::string("Note ") + kNoteNames[i] + " active (Left)");
+      configParam(NOTE_PARAM_R + i, 0.f, 1.f, 0.f,
+                  std::string("Note ") + kNoteNames[i] +
+                      " (Right quantizer, optional: phrases 2&4, or all 4 if Left is off)");
+      configLight(NOTE_LIGHT_R + i, std::string("Note ") + kNoteNames[i] + " active (Right)");
+    }
 
     for (int p = 0; p < 4; p++) {
       std::string n = std::to_string(p + 1);
@@ -161,6 +217,39 @@ struct TheReelPeetEvo : Module {
     selectPhrase(firstActive);
     phraseTimer = 0.f;
     phrasesPlayedThisRound = 0;
+  }
+
+  // Snaps volts (1V/oct) to the nearest note active in the given 12-entry
+  // set (noteActiveL or noteActiveR), searching one octave above/below too
+  // so notes near an octave boundary round to whichever neighboring active
+  // note is actually closest (a same-octave-only search would wrongly
+  // favor a distant low note over a near high one just across the
+  // boundary, or vice versa). If nothing is toggled on (all notes off),
+  // passes volts through unquantized rather than picking an arbitrary note
+  // or dividing by zero degrees. outSemitoneClass, if given, receives the
+  // 0-11 semitone actually picked (or -1 when nothing was active/no
+  // quantization happened) - used to flash that note's light.
+  float quantizeToActiveNotes(float volts, const bool *active, int *outSemitoneClass = nullptr) {
+    float semis = volts * 12.f;
+    float baseOct = std::floor(semis / 12.f) * 12.f;
+    float best = 0.f;
+    float bestDist = 1e9f;
+    bool anyActive = false;
+    for (int oct = -12; oct <= 12; oct += 12) {
+      for (int d = 0; d < 12; d++) {
+        if (!active[d]) continue;
+        anyActive = true;
+        float candidate = baseOct + oct + d;
+        float dist = std::abs(semis - candidate);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = candidate;
+        }
+      }
+    }
+    if (outSemitoneClass)
+      *outSemitoneClass = anyActive ? (((int)best % 12) + 12) % 12 : -1;
+    return anyActive ? best / 12.f : volts;
   }
 
   // Effective entropy for phrase p on this roll: the knob's set value plus
@@ -276,6 +365,20 @@ struct TheReelPeetEvo : Module {
       }
     }
 
+    // Light brightness itself is set later (with the mutationFlash-style
+    // decay loop below), once this step's played note (if any) is known -
+    // just track on/off state and the anyActive flags here.
+    bool anyActiveL = false, anyActiveR = false;
+    for (int i = 0; i < 12; i++) {
+      if (noteTrigL[i].process(params[NOTE_PARAM_L + i].getValue()))
+        noteActiveL[i] = !noteActiveL[i];
+      anyActiveL = anyActiveL || noteActiveL[i];
+
+      if (noteTrigR[i].process(params[NOTE_PARAM_R + i].getValue()))
+        noteActiveR[i] = !noteActiveR[i];
+      anyActiveR = anyActiveR || noteActiveR[i];
+    }
+
     if (justStarted)
       genesis();
 
@@ -341,7 +444,29 @@ struct TheReelPeetEvo : Module {
         if (envPhase == ENV_IDLE) {
           const float *playingSeq = usingGenesisNow ? poolGenesis[currentPhraseIdx] : pool[currentPhraseIdx];
           trigTimer = 0.01f;
-          heldCV = playingSeq[step];
+          // Both quantizers are optional (all lights off = ignored, CV
+          // passes through unquantized - see quantizeToActiveNotes). When
+          // only one side has any notes active, that lone side governs all
+          // 4 phrases rather than just its own half of the pool grid -
+          // only when BOTH sides are actually in use does the normal
+          // left/right split (matching poolColLeft[p % 2] in the widget:
+          // phrases 1&3 vs 2&4) apply.
+          const bool *quantSet;
+          bool quantIsLeft;
+          if (anyActiveL && !anyActiveR) {
+            quantSet = noteActiveL;
+            quantIsLeft = true;
+          } else if (anyActiveR && !anyActiveL) {
+            quantSet = noteActiveR;
+            quantIsLeft = false;
+          } else {
+            quantIsLeft = (currentPhraseIdx % 2 == 0);
+            quantSet = quantIsLeft ? noteActiveL : noteActiveR;
+          }
+          int playedSemitone = -1;
+          heldCV = quantizeToActiveNotes(playingSeq[step], quantSet, &playedSemitone);
+          if (playedSemitone >= 0)
+            (quantIsLeft ? playFlashL : playFlashR)[playedSemitone] = 1.f;
           envPhase = ENV_ATTACK;
         }
       }
@@ -388,6 +513,23 @@ struct TheReelPeetEvo : Module {
       lights[DRIFT_LIGHT + p].setBrightness(mutationFlash[p]);
     }
 
+    // Note lights: dim while merely toggled on, full-bright and decaying
+    // (same peak/clip LED idea as mutationFlash above, but much shorter -
+    // notes can play every step, not every few minutes) the instant that
+    // note is actually played, so "enabled" and "currently sounding" read
+    // as visually distinct.
+    const float noteFlashDecayTime = 0.25f;
+    const float noteBaseBrightness = 0.25f;
+    for (int i = 0; i < 12; i++) {
+      playFlashL[i] -= args.sampleTime / noteFlashDecayTime;
+      if (playFlashL[i] < 0.f) playFlashL[i] = 0.f;
+      lights[NOTE_LIGHT_L + i].setBrightness(std::max(noteActiveL[i] ? noteBaseBrightness : 0.f, playFlashL[i]));
+
+      playFlashR[i] -= args.sampleTime / noteFlashDecayTime;
+      if (playFlashR[i] < 0.f) playFlashR[i] = 0.f;
+      lights[NOTE_LIGHT_R + i].setBrightness(std::max(noteActiveR[i] ? noteBaseBrightness : 0.f, playFlashR[i]));
+    }
+
     if (envPhase == ENV_ATTACK) {
       if (riseTime < 0.001f) {
         envLevel = 10.f;
@@ -413,6 +555,49 @@ struct TheReelPeetEvo : Module {
     outputs[OUT_OUTPUT].setVoltage(outCV);
     outputs[ENV_OUTPUT].setVoltage(envLevel);
     lights[RUN_LIGHT].setBrightness(running ? 1.f : 0.f);
+  }
+
+  // Persists the quantizer note toggles across patch save/load - these
+  // live outside the auto-saved params (NOTE_PARAM_L/R are just momentary
+  // edge sources, not the actual on/off state, same as ACTIVE_PARAM/
+  // phraseActive) so without this they'd silently reset to all-off every
+  // time a patch reopens.
+  json_t *dataToJson() override {
+    json_t *rootJ = json_object();
+    json_t *noteLJ = json_array();
+    json_t *noteRJ = json_array();
+    for (int i = 0; i < 12; i++) {
+      json_array_append_new(noteLJ, json_boolean(noteActiveL[i]));
+      json_array_append_new(noteRJ, json_boolean(noteActiveR[i]));
+    }
+    json_object_set_new(rootJ, "noteActiveL", noteLJ);
+    json_object_set_new(rootJ, "noteActiveR", noteRJ);
+
+    json_t *phraseJ = json_array();
+    for (int p = 0; p < 4; p++)
+      json_array_append_new(phraseJ, json_boolean(phraseActive[p]));
+    json_object_set_new(rootJ, "phraseActive", phraseJ);
+
+    return rootJ;
+  }
+
+  void dataFromJson(json_t *rootJ) override {
+    json_t *noteLJ = json_object_get(rootJ, "noteActiveL");
+    if (noteLJ) {
+      for (int i = 0; i < 12 && i < (int)json_array_size(noteLJ); i++)
+        noteActiveL[i] = json_boolean_value(json_array_get(noteLJ, i));
+    }
+    json_t *noteRJ = json_object_get(rootJ, "noteActiveR");
+    if (noteRJ) {
+      for (int i = 0; i < 12 && i < (int)json_array_size(noteRJ); i++)
+        noteActiveR[i] = json_boolean_value(json_array_get(noteRJ, i));
+    }
+
+    json_t *phraseJ = json_object_get(rootJ, "phraseActive");
+    if (phraseJ) {
+      for (int p = 0; p < 4 && p < (int)json_array_size(phraseJ); p++)
+        phraseActive[p] = json_boolean_value(json_array_get(phraseJ, p));
+    }
   }
 };
 
@@ -498,6 +683,37 @@ struct EvoStaticLabel : TransparentWidget {
   }
 };
 
+// Sideways text reading bottom-to-top (first character at the anchor,
+// each later character further up) - used for the "QUANTIZE" label
+// between the two piano-key columns. nanovg has no vertical-text mode, so
+// this rotates the whole draw context -90 degrees around the widget's
+// bottom-center point before drawing normally: local +x (later
+// characters) becomes screen -y (upward) after the rotation.
+struct EvoVerticalLabel : TransparentWidget {
+  std::string text;
+  float fontSize = 10.f;
+
+  void draw(const DrawArgs &args) override {
+    nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+    nvgFillColor(args.vg, nvgRGB(0x28, 0x0b, 0x0b));
+    nvgFontSize(args.vg, fontSize);
+    // Centered (not left-aligned) so the anchor is the middle of the
+    // string rather than its start - the word sits centered in the gap at
+    // its natural, unstretched size, with "Q" still ending up at the low
+    // (screen-bottom) end and "E" at the high end after the rotation
+    // below. An earlier version force-stretched the letters to span the
+    // full widget height, which just spread them out into an
+    // unreadable-looking mess - normal size reads far better.
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+
+    nvgSave(args.vg);
+    nvgTranslate(args.vg, box.size.x * 0.5f, box.size.y * 0.5f);
+    nvgRotate(args.vg, -1.5707963f);
+    nvgText(args.vg, 0.f, 0.f, text.c_str(), nullptr);
+    nvgRestore(args.vg);
+  }
+};
+
 // =======================
 //   WIDGET LAYOUT
 // =======================
@@ -557,12 +773,16 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // sub-columns (so Active/Recall align vertically, and Entropy/Drift
     // align vertically).
     const float poolColLeft[2] = {24.723f, 55.202f};      // left edge of each pool column (raw x=73, 163)
-    const float rowAY[2] = {runY, runY + 32.f};           // Active+Entropy row, per pool-grid-row
+    // Row 2 (pool3/4) is lifted 6 raw px (2.032mm) closer to row 1, closing
+    // up the gap under it to make room for the quantizer's own grey square
+    // below - see the matching pool3/pool4 rect y in the SVG (126 -> 120).
+    const float row2Lift = 2.032f;
+    const float rowAY[2] = {runY, runY + 32.f - row2Lift};      // Active+Entropy row, per pool-grid-row
     const float rowBY[2] = {rowAY[0] + 16.f, rowAY[1] + 16.f};  // Recall+Drift row, per pool-grid-row
 
     // Pool box bounds (matching res/TheReelPeetEvo.svg's pool1-4 rects,
     // raw px / 2.9528) for the background numerals below.
-    const float poolRowTop[2] = {8.467f, 42.667f};  // top edge of each pool row (raw y=25, 126)
+    const float poolRowTop[2] = {8.467f, 42.667f - row2Lift};  // top edge of each pool row (raw y=25, 120)
     const float poolBoxW = 29.80f;                  // raw width 88
     const float poolBoxH = 31.6f;                   // raw height ~93-94
 
@@ -592,6 +812,54 @@ struct TheReelPeetEvoWidget : ModuleWidget {
 
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
+
+    // Quantizer: two independent 12-per-semitone toggle grids, one per pool
+    // grid column (poolColLeft[0]/[1]) - left governs phrases 1&3, right
+    // governs phrases 2&4 (see quantSet in process()). Each is laid out
+    // like a piano keyboard turned on its side - 7 "white key" buttons
+    // (naturals) in a vertical column, C at the bottom rising to B at the
+    // top (mirroring low-to-high pitch reading bottom-to-top), with the 5
+    // "black key" buttons (sharps) offset to the left, each sitting at
+    // the vertical midpoint between the two naturals it falls between
+    // (none between E/F or B/C, same as a real keyboard). No text labels -
+    // the black/white key positions are the identification, same as on
+    // the hardware this is modeled after (Intellijel Scales).
+    // Pulled down from the pool grid (78mm) and pitch tightened (7.5mm),
+    // so the topmost button (B) clears the quantizer's grey background
+    // rect below (top edge raw y=223, ~75.6mm) with real margin instead of
+    // poking above it.
+    const float whiteTopY = 80.f;   // y of the topmost row (B); C lands at the bottom
+    const float whitePitchY = 6.85f;
+    const float quantGapCenterX = poolColLeft[0] + 30.135f;  // horizontal midpoint between the two columns
+    auto addPianoColumn = [&](float centerX, int paramBase, int lightBase) {
+      float whiteX = centerX + 4.f;
+      float blackX = whiteX - 8.f;
+      const int whiteSemis[7] = {0, 2, 4, 5, 7, 9, 11};        // C D E F G A B
+      const int blackSemis[5] = {1, 3, 6, 8, 10};              // C# D# F# G# A#
+      const int blackAfterWhite[5] = {0, 1, 3, 4, 5};          // black[k] sits between white[idx] and white[idx+1]
+      float whiteRowY[7];
+      for (int i = 0; i < 7; i++) {
+        whiteRowY[i] = whiteTopY + (6 - i) * whitePitchY;
+        addParam(createParamCentered<LEDButton>(mm2px(Vec(whiteX, whiteRowY[i])), module, paramBase + whiteSemis[i]));
+        addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(whiteX, whiteRowY[i])), module, lightBase + whiteSemis[i]));
+      }
+      for (int i = 0; i < 5; i++) {
+        float by = (whiteRowY[blackAfterWhite[i]] + whiteRowY[blackAfterWhite[i] + 1]) * 0.5f;
+        addParam(createParamCentered<LEDButton>(mm2px(Vec(blackX, by)), module, paramBase + blackSemis[i]));
+        addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(blackX, by)), module, lightBase + blackSemis[i]));
+      }
+    };
+    addPianoColumn(poolColLeft[0] + 14.9f, TheReelPeetEvo::NOTE_PARAM_L, TheReelPeetEvo::NOTE_LIGHT_L);
+    addPianoColumn(poolColLeft[1] + 14.9f, TheReelPeetEvo::NOTE_PARAM_R, TheReelPeetEvo::NOTE_LIGHT_R);
+
+    // "QUANTIZE", vertical, Q at the bottom, in the horizontal gap between
+    // the two piano-key columns above.
+    auto *quantizeLabel = new EvoVerticalLabel;
+    quantizeLabel->text = "QUANTIZE (OPTIONAL)";
+    quantizeLabel->fontSize = 15.f;
+    quantizeLabel->box.pos = mm2px(Vec(quantGapCenterX - 6.f, whiteTopY));
+    quantizeLabel->box.size = mm2px(Vec(12.f, 6.f * whitePitchY));
+    addChild(quantizeLabel);
 
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
@@ -655,11 +923,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       lenDisplay->value = &module->len;
       addChild(lenDisplay);
 
-      // The evolution-cycle flowchart (EvoFlowDiagram) that used to fill
-      // this space has been removed - reserved for a scale-quantizer
-      // control instead. Open area: raw x=73-251, y=220-360
-      // (poolColLeft[0] is that same raw x=73 left edge, in mm), i.e.
-      // mm2px(Vec(poolColLeft[0], 74.51f)) sized mm2px(Vec(60.27f, 47.41f)).
     }
   }
 };
