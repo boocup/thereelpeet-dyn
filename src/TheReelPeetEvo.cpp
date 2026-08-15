@@ -653,6 +653,22 @@ struct EvoPoolNumeral : TransparentWidget {
     float cx = box.size.x * 0.5f;
     float cy = box.size.y * 0.5f;
 
+#ifdef METAMODULE
+    // MetaModule's firmware nvgTextBounds()/nvgTextMetrics() are stubbed
+    // (always return zero - the real fontstash-based measurement code is
+    // #if(0)'d out in its nanovg.c), so the glyph-bounds-based centering
+    // below can't work there - confirmed on hardware: a hand-picked fixed
+    // offset (fontSize * 0.34) undershot and still overlapped the knobs
+    // above. NVG_ALIGN_MIDDLE is handled inside nvgText()'s own draw path
+    // (which IS fully implemented on MetaModule, unlike the separate
+    // measurement APIs), using the font's real ascender/descender metrics
+    // rather than a guessed constant - less precise per-glyph than the
+    // desktop approach below (the original reason MIDDLE was dropped: "1"
+    // and "3" sat at very slightly different heights), but reliable
+    // without hardware-tuned magic numbers.
+    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    float baselineY = cy;
+#else
     // NVG_ALIGN_MIDDLE centers on the font's ascender/descender metrics,
     // not this specific glyph's own visual shape - digits like "1" render
     // with a different apparent top/bottom than "3" or "4" as a result, so
@@ -665,6 +681,7 @@ struct EvoPoolNumeral : TransparentWidget {
     nvgTextBounds(args.vg, cx, 0.f, text.c_str(), nullptr, bounds);
     float glyphMidY = (bounds[1] + bounds[3]) * 0.5f;
     float baselineY = cy - glyphMidY;
+#endif
 
     // Outline temporarily disabled to preview the numeral without it -
     // re-enable this block to restore the light-gray stamped outline.
