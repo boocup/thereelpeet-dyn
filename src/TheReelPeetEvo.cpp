@@ -117,6 +117,7 @@ struct TheReelPeetEvo : Module {
   float envLevel = 0.f;
   int envPhase = ENV_IDLE;
   int len = 8;
+  int prevLen = 8;  // tracks Length changes so closeLoopSeam re-runs when the wrap point itself moves
   // Which of the 12 semitones (C..B) each quantizer treats as in-scale -
   // see NOTE_PARAM_L/R. Both default to all off (quantizer disabled, CV
   // passed through unquantized - see quantizeToActiveNotes) so adding this
@@ -146,6 +147,22 @@ struct TheReelPeetEvo : Module {
   float playFlashR[12] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
   float clockPeriod = 0.5f;    // measured time between the last two Clock In pulses, drives Phrase Duration
   float timeSinceClock = 0.f;  // time since the last Clock In pulse; becomes the next clockPeriod
+  // Both false right after genesis() until real Clock In pulses of this
+  // run establish a genuine measurement. Without this, phraseTimer (which
+  // accumulates every sample regardless of whether any clock pulses have
+  // arrived) can exceed a phraseDuration computed from a stale/default
+  // clockPeriod almost immediately after pressing Run - firing a spurious
+  // premature phrase transition (a real Recall roll) and, with few
+  // phrases active, even evolveAllPhrases() (Drift) - both well before
+  // the actual incoming clock has sent a single pulse. Reported on real
+  // hardware as "Recall and Drift lit up on the same phrase, immediately."
+  // Needs two edges, not one: the first edge after Run is pressed only
+  // measures "time since genesis" (arbitrary, depends on the clock's
+  // phase when Run happened to be pressed), not a real inter-pulse gap -
+  // sawFirstEdge marks that starting point; clockMeasured only goes true
+  // once a second edge gives an actual period between two real pulses.
+  bool sawFirstEdge = false;
+  bool clockMeasured = false;
 
   dsp::SchmittTrigger onTrig;
   dsp::SchmittTrigger activeTrig[4];
@@ -197,13 +214,19 @@ struct TheReelPeetEvo : Module {
     genesis();
   }
 
-  // Genesis: fresh random master, then every one of the 4 backing pool
-  // slots is derived from it (drift-gated per-step variation, using each
-  // phrase's own drift) — this is the one point where all phrases share
-  // common DNA.
+  // Genesis: master[] is now a random walk (each step = previous step +
+  // a small musicalStep delta) rather than 16 independent uniform-random
+  // values, so the shared "DNA" every phrase derives from has melodic
+  // contour from the start instead of octave-jumping noise. The first
+  // step still has no predecessor to walk from, so it stays a free
+  // uniform pick. Every one of the 4 backing pool slots is then derived
+  // from master (drift-gated per-step variation, using each phrase's own
+  // drift) — this is the one point where all phrases share common DNA.
+  static constexpr float kGenesisSigma = 0.3f;  // ~3.6 semitones std dev
   void genesis() {
-    for (int i = 0; i < 16; i++)
-      master[i] = random::uniform() * 5.f;
+    master[0] = random::uniform() * 5.f;
+    for (int i = 1; i < 16; i++)
+      master[i] = musicalStep(master[i - 1], kGenesisSigma);
     for (int p = 0; p < 4; p++)
       reseedPhrase(p);
 
@@ -215,8 +238,28 @@ struct TheReelPeetEvo : Module {
       }
     }
     selectPhrase(firstActive);
+    // selectPhrase() rolls the normal 15% Recall chance, but pool[] and
+    // poolGenesis[] are identical right after reseedPhrase() above -
+    // nothing has evolved yet to make "frozen snapshot" differ from
+    // "current pool" - so a lit Recall light here would be technically
+    // true but audibly meaningless, and just confusing. Force it off for
+    // this first selection only; later phrase transitions still roll
+    // normally once there's actually something to recall from.
+    usingGenesisNow = false;
+    // mutationFlash[] isn't reset anywhere else - without this, a Drift
+    // light still mid-decay from before a stop/restart would carry over
+    // and appear to indicate a mutation that hasn't actually happened yet
+    // in this fresh run.
+    for (int p = 0; p < 4; p++)
+      mutationFlash[p] = 0.f;
     phraseTimer = 0.f;
     phrasesPlayedThisRound = 0;
+    // clockPeriod isn't reset here (its correct value depends on the
+    // incoming clock, which we haven't measured yet this run) - instead
+    // phrase-transition timing is held off entirely until it's been
+    // freshly measured at least once. See clockMeasured's declaration.
+    sawFirstEdge = false;
+    clockMeasured = false;
   }
 
   // Snaps volts (1V/oct) to the nearest note active in the given 12-entry
@@ -264,17 +307,66 @@ struct TheReelPeetEvo : Module {
     return clamp(base + delta, 0.f, 1.f);
   }
 
+  // The one "musical mutation" primitive, used everywhere a step deviates
+  // from a reference value (random-walk genesis, phrase reseed, and
+  // ongoing evolution) - a small gaussian-distributed delta around the
+  // reference, clamped back into the module's 0-5V pitch range, instead
+  // of discarding the reference for an unrelated fresh random value.
+  // sigma is in volts (1V/oct, so e.g. 0.25f is a 3-semitone std dev).
+  // random::normal() has unbounded tails, so without a hard cap a rare
+  // 3+ sigma roll could still land as a jarring jump ("bounded/gaussian"
+  // in the design notes means both - gaussian shape, hard-capped tails,
+  // not gaussian alone) - reported as "crazy octave jumps" on real
+  // hardware before this cap was added.
+  static constexpr float kMaxDeltaSigmas = 2.f;
+  float musicalStep(float value, float sigma) {
+    float delta = clamp(random::normal() * sigma, -sigma * kMaxDeltaSigmas, sigma * kMaxDeltaSigmas);
+    return clamp(value + delta, 0.f, 5.f);
+  }
+
+  // pool[]/poolGenesis[] are always a fixed 16-slot chain (each step built
+  // from the previous), but playback treats them as a closed loop of the
+  // current, user-adjustable Length - step len-1 wraps straight back to
+  // step 0 every time through. Those two slots have no continuity
+  // relationship in the chain (reported on real hardware as "a wild
+  // octave jump" at every loop repeat, not just once). This re-derives
+  // the wrap step from step 0 using the same musicalStep sizing as any
+  // other adjacent-step deviation, so the seam reads like a normal
+  // transition instead of a bigger jump than the rest of the melody.
+  // Must be re-run any time len changes (the wrap point itself moves) or
+  // the array's content changes (reseed, mutation) - not just once at
+  // genesis.
+  void closeLoopSeam(float *arr) {
+    if (len <= 1) return;  // no wrap to smooth for a 1-step "loop"
+    arr[len - 1] = musicalStep(arr[0], kMutationSigma);
+  }
+
+  // Anchor steps (the downbeat and its halfway point) mutate less often
+  // than the steps between them, so evolving phrases keep a stable
+  // rhythmic/harmonic backbone instead of drifting unrecognizably even at
+  // high Entropy. Scaled to the current Length (len/2) rather than a
+  // hardcoded step 8, since Length is user-adjustable (2-16) and a fixed
+  // step 8 would be meaningless - or not even played - at shorter lengths.
+  static constexpr float kAnchorMutationScale = 0.35f;
+  bool isAnchorStep(int i) {
+    return i == 0 || i == len / 2;
+  }
+
   // Re-derives a single phrase from the current master (not a fresh one),
   // gated by that phrase's own entropy (drift half). Used both by genesis()
   // and when a phrase's Active toggle goes off->on, so phrases activated
   // later still share the same lineage as those already playing. The
   // result is also saved as that phrase's Recall snapshot.
+  static constexpr float kMutationSigma = 0.15f;  // ~1.8 semitones std dev
   void reseedPhrase(int p) {
     float driftP = entropyOf(p);
     for (int i = 0; i < 16; i++) {
-      pool[p][i] = (random::uniform() < driftP) ? random::uniform() * 5.f : master[i];
+      float stepDriftP = isAnchorStep(i) ? driftP * kAnchorMutationScale : driftP;
+      pool[p][i] = (random::uniform() < stepDriftP) ? musicalStep(master[i], kMutationSigma) : master[i];
       poolGenesis[p][i] = pool[p][i];
     }
+    closeLoopSeam(pool[p]);
+    poolGenesis[p][len - 1] = pool[p][len - 1];  // keep them identical, same as every other slot above
   }
 
   // Makes idx the currently-playing phrase and rolls its Recall check for
@@ -334,23 +426,53 @@ struct TheReelPeetEvo : Module {
       int split = 1 + (int)(random::uniform() * 14.f);  // 1..14
       for (int i = 0; i < 16; i++) {
         candidates[p][i] = (i < split) ? pool[p][i] : pool[partner][i];
-        if (random::uniform() < driftP)
-          candidates[p][i] = random::uniform() * 5.f;
+        // Perturbs whatever crossover already produced for this step by a
+        // small musicalStep delta, instead of discarding it for an
+        // unrelated fresh random value - keeps mutations sounding like
+        // variations on the existing melodic material. Anchor steps
+        // mutate less often (see isAnchorStep).
+        float stepDriftP = isAnchorStep(i) ? driftP * kAnchorMutationScale : driftP;
+        if (random::uniform() < stepDriftP)
+          candidates[p][i] = musicalStep(candidates[p][i], kMutationSigma);
       }
     }
+    // Below the threshold, the persist check can still pass (structurally
+    // "replaced") even though crossover+mutation happened to land back on
+    // essentially the same values - e.g. low Entropy, or a crossover
+    // partner that was already very similar. Flashing Drift for that
+    // would tell the user something changed when nothing audible did.
+    const float kAudibleChangeThreshold = 0.01f;  // ~0.12 semitones
     for (int k = 0; k < n; k++) {
       int p = activeIdx[k];
       float persistP = 1.f - entropyRoll[p];
       if (random::uniform() >= persistP) {
+        bool audiblyChanged = false;
+        for (int i = 0; i < 16; i++) {
+          if (std::abs(candidates[p][i] - pool[p][i]) > kAudibleChangeThreshold) {
+            audiblyChanged = true;
+            break;
+          }
+        }
         for (int i = 0; i < 16; i++)
           pool[p][i] = candidates[p][i];
-        mutationFlash[p] = 1.f;
+        closeLoopSeam(pool[p]);
+        if (audiblyChanged)
+          mutationFlash[p] = 1.f;
       }
     }
   }
 
   void process(const ProcessArgs &args) override {
     len = clamp((int)std::round(params[LENGTH_PARAM].getValue()), 1, 16);
+    if (len != prevLen) {
+      prevLen = len;
+      // The wrap point moved - re-close every phrase's seam at the new
+      // len-1, not just whichever phrase happens to reseed/mutate next.
+      for (int p = 0; p < 4; p++) {
+        closeLoopSeam(pool[p]);
+        closeLoopSeam(poolGenesis[p]);
+      }
+    }
 
     bool wasRunning = running;
     if (onTrig.process(params[RUN_PARAM].getValue()))
@@ -409,7 +531,16 @@ struct TheReelPeetEvo : Module {
     timeSinceClock += args.sampleTime;
     bool clockEdge = clockTrig.process(inputs[CLOCK_INPUT].getVoltage());
     if (clockEdge) {
-      clockPeriod = timeSinceClock;
+      if (sawFirstEdge) {
+        // timeSinceClock is now a genuine gap between two real pulses.
+        clockPeriod = timeSinceClock;
+        clockMeasured = true;
+      } else {
+        // This edge only establishes a starting point - timeSinceClock
+        // up to here was measured from genesis() (when Run was pressed),
+        // not from a previous pulse, so it isn't a real period.
+        sawFirstEdge = true;
+      }
       timeSinceClock = 0.f;
     }
 
@@ -418,7 +549,7 @@ struct TheReelPeetEvo : Module {
       for (int p = 0; p < 4; p++)
         if (phraseActive[p]) activeCount++;
 
-      if (activeCount > 0) {
+      if (activeCount > 0 && clockMeasured) {
         // Phrase Duration is no longer a knob - each phrase holds for a
         // fixed number of full loops through the pattern, so it always
         // feels proportionate to Length/Clock rather than needing its own
@@ -507,10 +638,20 @@ struct TheReelPeetEvo : Module {
       // peak/clip LED - a longer window than a typical LED flash, since
       // real mutations are infrequent enough (minutes apart at default
       // settings) that a brief flash was too easy to miss entirely.
-      const float mutationDecayTime = 4.f;
+      // Stretched from 4s to 7s (plus the MediumLight bump above) after
+      // real-hardware testing confirmed a 4s SmallLight flash was still
+      // easy to miss.
+      const float mutationDecayTime = 7.f;
       mutationFlash[p] -= args.sampleTime / mutationDecayTime;
       if (mutationFlash[p] < 0.f) mutationFlash[p] = 0.f;
-      lights[DRIFT_LIGHT + p].setBrightness(mutationFlash[p]);
+      // Hidden while Recall is showing for this same phrase - "the pool
+      // just mutated" is confusing/contradictory information to display
+      // at the exact moment you're actually hearing the untouched frozen
+      // original instead of that mutation. mutationFlash itself keeps
+      // decaying underneath, so if Recall lets go before it's fully
+      // decayed, Drift can still reappear and finish its flash normally.
+      bool recallShowing = (p == currentPhraseIdx && usingGenesisNow);
+      lights[DRIFT_LIGHT + p].setBrightness(recallShowing ? 0.f : mutationFlash[p]);
     }
 
     // Note lights: dim while merely toggled on, full-bright and decaying
@@ -899,8 +1040,11 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(ctrlX0, rowAY[row])), module, TheReelPeetEvo::ACTIVE_LIGHT + p));
 
       addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(ctrlX1, rowAY[row])), module, TheReelPeetEvo::ENTROPY_PARAM + p));
-      addChild(createLightCentered<SmallLight<YellowLight>>(mm2px(Vec(ctrlX0, rowBY[row])), module, TheReelPeetEvo::RECALL_LIGHT + p));
-      addChild(createLightCentered<SmallLight<RedLight>>(mm2px(Vec(ctrlX1, rowBY[row])), module, TheReelPeetEvo::DRIFT_LIGHT + p));
+      // Bumped from SmallLight - both are meaningful events (Recall: this
+      // phrase is playing its frozen snapshot; Drift: it just mutated),
+      // easy to miss as small dots.
+      addChild(createLightCentered<MediumLight<YellowLight>>(mm2px(Vec(ctrlX0, rowBY[row])), module, TheReelPeetEvo::RECALL_LIGHT + p));
+      addChild(createLightCentered<MediumLight<RedLight>>(mm2px(Vec(ctrlX1, rowBY[row])), module, TheReelPeetEvo::DRIFT_LIGHT + p));
     }
 
     if (module) {
@@ -936,8 +1080,11 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         float ctrlX1  = colLeft + 22.f;
 
         addLabel("Entropy", ctrlX1, rowAY[row] + 6.f, dispW, 8.f);
-        addLabel("Recall", ctrlX0, rowBY[row] + 2.5f, dispW, 7.f);
-        addLabel("Drift", ctrlX1, rowBY[row] + 2.5f, dispW, 7.f);
+        // Bumped from 7pt to match Entropy's size, alongside the light
+        // size bump above - Recall/Drift are meaningful events, not
+        // low-priority sub-labels.
+        addLabel("Recall", ctrlX0, rowBY[row] + 2.5f, dispW, 8.f);
+        addLabel("Drift", ctrlX1, rowBY[row] + 2.5f, dispW, 8.f);
       }
 
       auto *lenDisplay = new EvoLengthDisplay;
