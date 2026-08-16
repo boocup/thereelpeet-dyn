@@ -200,7 +200,10 @@ struct TheReelPeetEvo : Module {
     // just an edge source (see engineTrig in process()), the actual choice
     // lives in mutationEngine and cycles Gaussian -> Markov -> Interval.
     configParam(ENGINE_PARAM, 0.f, 1.f, 0.f, "Cycle mutation engine (Gaussian/Markov/Interval)");
-    configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
+    // Rise's range used to be half of Fall's (0-2s vs 0-4s) - same knob
+    // position meant very different times between the two, confusing.
+    // Matched to Fall's 0-4s range so the pair reads consistently.
+    configParam(RISE_PARAM, 0.f, 4.f, 0.f, "Rise time", " s");
     configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
 
     // Note toggles: momentary buttons, same pattern as ACTIVE_PARAM below -
@@ -908,15 +911,18 @@ struct TheReelPeetEvo : Module {
           // for this step's duration - without freezing the ramp too, a
           // short Fall time would already have decayed to silence by the
           // time a tie lands, making it indistinguishable from a rest.
-        } else {
-          // Always retriggers, regardless of envPhase - a step sequencer
-          // should always cut off whatever's still sounding and start the
-          // new note (ENV_ATTACK ramps up from wherever envLevel currently
-          // sits, so this doesn't click). The old envPhase==ENV_IDLE gate
-          // here was Dynamics-era leftover logic - with envFrozen now able
-          // to hold envPhase in ATTACK/DECAY across a whole tie chain, that
-          // gate would have silently dropped the real note that follows
-          // the chain instead of playing it.
+        } else if (envPhase == ENV_IDLE) {
+          // A-166-style gate, restored per feedback: a new note never
+          // fires until the current envelope has fully completed, same as
+          // TheReelPeet (dyn). This was briefly changed to always-retrigger
+          // to fix a tie-chain bug (the real note after a tie could get
+          // silently dropped while envFrozen held envPhase non-idle) - but
+          // that's structurally the same situation as any ordinary long
+          // Rise/Fall outlasting the clock period, which this gate has
+          // always been able to skip past too. Restoring it trades "every
+          // step is guaranteed to retrigger" for "long envelopes always
+          // ring out fully," matching this module's sibling and the
+          // explicit preference here.
           const float *playingSeq = usingGenesisNow ? poolGenesis[currentPhraseIdx] : pool[currentPhraseIdx];
           trigTimer = 0.01f;
           // Both quantizers are optional (all lights off = ignored, CV

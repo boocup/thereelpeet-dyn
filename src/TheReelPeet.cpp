@@ -91,9 +91,12 @@ struct TheReelPeet : Module {
     configParam(DYNAMICS_B_PARAM, -1.f, 1.f, 0.f,
                 "Lane B Dynamics. CW: held gates, CCW: note drops");
 
-    configParam(RISE_A_PARAM, 0.f, 2.f, 0.f, "Lane A Rise time", " s");
+    // Rise's range used to be half of Fall's (0-2s vs 0-4s) - same knob
+    // position meant very different times between the two, confusing.
+    // Matched to Fall's 0-4s range so each pair reads consistently.
+    configParam(RISE_A_PARAM, 0.f, 4.f, 0.f, "Lane A Rise time", " s");
     configParam(FALL_A_PARAM, 0.f, 4.f, 0.5f, "Lane A Fall time", " s");
-    configParam(RISE_B_PARAM, 0.f, 2.f, 0.f, "Lane B Rise time", " s");
+    configParam(RISE_B_PARAM, 0.f, 4.f, 0.f, "Lane B Rise time", " s");
     configParam(FALL_B_PARAM, 0.f, 4.f, 0.5f, "Lane B Fall time", " s");
 
     configOutput(OUT_A_OUTPUT, "Pitch CV A (1V/Oct)");
