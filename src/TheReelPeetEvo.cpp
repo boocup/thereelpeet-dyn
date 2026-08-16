@@ -13,7 +13,8 @@ using namespace rack::ui;
 // TheReelPeet::processLane, just for one lane, always reading from
 // whichever phrase is currently active, always triggering normally each
 // step - the Dynamics feature (held-gate/note-drop probability) this
-// module briefly had was dropped when its knob was repurposed for Jitter.
+// module briefly had was dropped entirely (its knob was repurposed for
+// Jitter, which has since also been removed - see entropyOf).
 //
 // No internal BPM knob or free-running clock - the module is externally
 // clocked via Clock In. Each incoming pulse advances one step; with
@@ -30,12 +31,6 @@ using namespace rack::ui;
 // persist (replacement resistance) as one inverse-coupled axis: CW = more
 // drift + less persist (changes readily), CCW = less drift + more persist
 // (nearly frozen). drift = entropy, persist = 1 - entropy.
-//
-// Jitter is a single global knob that adds a small random offset to each
-// phrase's effective Entropy, re-rolled every generation (see entropyOf) -
-// so 4 phrases with identical Entropy settings still drift apart from each
-// other over time instead of evolving in lockstep. At Jitter=0 (default)
-// this has no effect.
 //
 // Phrase Duration isn't a knob at all - each phrase holds for a fixed
 // number of full loops through the pattern (see phraseLoops below),
@@ -86,7 +81,6 @@ struct TheReelPeetEvo : Module {
   enum ParamId {
     RUN_PARAM,
     LENGTH_PARAM,
-    JITTER_PARAM,   // was DYNAMICS_PARAM - Dynamics dropped, this knob repurposed to drive Jitter instead
     RISE_PARAM,
     FALL_PARAM,
     ACTIVE_PARAM,                        // ACTIVE_PARAM + 0..3
@@ -117,6 +111,11 @@ struct TheReelPeetEvo : Module {
   float heldCV = 0.f;
   float envLevel = 0.f;
   int envPhase = ENV_IDLE;
+  // A tie must pause the envelope ramp itself, not just skip the retrigger -
+  // envLevel advances every sample purely off envPhase, so without this a
+  // tie landing after a short Fall time is inaudible (decay already
+  // finished by then, so "don't retrigger" just continues silence).
+  bool envFrozen = false;
   int len = 8;
   int prevLen = 8;  // tracks Length changes so closeLoopSeam re-runs when the wrap point itself moves
   // Which of the 12 semitones (C..B) each quantizer treats as in-scale -
@@ -155,6 +154,15 @@ struct TheReelPeetEvo : Module {
   int loopsCompleted = 0;
   int phrasesPlayedThisRound = 0;
   float mutationFlash[4] = {0.f, 0.f, 0.f, 0.f};  // decays after a phrase's pool actually gets replaced
+  // evolveAllPhrases() runs once per full round, mutating every active
+  // phrase's pool at once regardless of which one is currently playing -
+  // flashing mutationFlash immediately there meant a phrase's Drift light
+  // could light up while a totally different phrase was audibly playing,
+  // with no correlation to what's on screen. pendingDrift records "this
+  // phrase changed since it last played" and selectPhrase() converts that
+  // into an actual flash only once that phrase becomes current - so the
+  // light always means "what you're about to hear differs from last time."
+  bool pendingDrift[4] = {false, false, false, false};
   // Flashes the just-played note's light on top of its steady "enabled"
   // brightness, decaying like mutationFlash above - lets you see which
   // in-scale note actually got picked each step, not just which notes are
@@ -173,9 +181,6 @@ struct TheReelPeetEvo : Module {
 
     configParam(RUN_PARAM, 0.f, 1.f, 0.f, "Run toggle");
     configParam(LENGTH_PARAM, 2.f, 16.f, 8.f, "Length (2-16 steps)");
-    configParam(JITTER_PARAM, 0.f, 1.f, 0.f,
-                "Jitter (randomizes each phrase's effective Entropy per generation)",
-                "%", 0.f, 100.f);
     configParam(RISE_PARAM, 0.f, 2.f, 0.f, "Rise time", " s");
     configParam(FALL_PARAM, 0.f, 4.f, 0.5f, "Fall time", " s");
 
@@ -197,7 +202,7 @@ struct TheReelPeetEvo : Module {
       std::string n = std::to_string(p + 1);
       configParam(ACTIVE_PARAM + p, 0.f, 1.f, 0.f, "Phrase " + n + " active toggle");
       configParam(ENTROPY_PARAM + p, 0.f, 1.f, 0.25f,
-                  "Phrase " + n + " entropy (CW: more drift/less persist, CCW: less drift/more persist)",
+                  "Phrase " + n + " entropy (CW: more drift/less persist/more rests+ties, CCW: less drift/more persist/fewer rests+ties)",
                   "%", 0.f, 100.f);
       configLight(ACTIVE_LIGHT + p, "Phrase " + n + " active");
       configLight(RECALL_LIGHT + p, "Phrase " + n + " recall active");
@@ -229,7 +234,14 @@ struct TheReelPeetEvo : Module {
   // jumps, since the hard 2-sigma delta cap (see musicalStep) still holds.
   static constexpr float kGenesisSigma = 0.45f;  // ~5.4 semitones std dev, ~10.8 semitone cap
   void genesis() {
-    master[0] = random::uniform() * 5.f;
+    // A full 0-5V uniform draw (5 octaves) had no bias toward a "home"
+    // register - every Run press could just as easily start at the very
+    // top or bottom of the pitch range as the middle, and the rest of the
+    // walk stays clustered near wherever step 0 landed (reported as
+    // "crazy high" on one Run, "crazy low" after a restart). Narrowed to a
+    // centered 2-octave window instead - still varies run to run, just not
+    // at the literal extremes.
+    master[0] = 1.5f + random::uniform() * 2.f;
     for (int i = 1; i < 16; i++)
       master[i] = musicalStep(master[i - 1], kGenesisSigma);
     for (int p = 0; p < 4; p++)
@@ -242,15 +254,12 @@ struct TheReelPeetEvo : Module {
         break;
       }
     }
+    // Reset before selectPhrase() below, which checks pendingDrift[idx] -
+    // a stale true left over from a previous run could otherwise trigger
+    // an unearned Drift flash on the very first phrase of a fresh start.
+    for (int p = 0; p < 4; p++)
+      pendingDrift[p] = false;
     selectPhrase(firstActive);
-    // selectPhrase() rolls the normal 15% Recall chance, but pool[] and
-    // poolGenesis[] are identical right after reseedPhrase() above -
-    // nothing has evolved yet to make "frozen snapshot" differ from
-    // "current pool" - so a lit Recall light here would be technically
-    // true but audibly meaningless, and just confusing. Force it off for
-    // this first selection only; later phrase transitions still roll
-    // normally once there's actually something to recall from.
-    usingGenesisNow = false;
     // mutationFlash[] isn't reset anywhere else - without this, a Drift
     // light still mid-decay from before a stop/restart would carry over
     // and appear to indicate a mutation that hasn't actually happened yet
@@ -264,6 +273,7 @@ struct TheReelPeetEvo : Module {
     // since a tie deliberately leaves heldCV untouched rather than reading
     // a fresh value.
     heldCV = 0.f;
+    envFrozen = false;
     loopsCompleted = 0;
     phrasesPlayedThisRound = 0;
   }
@@ -301,16 +311,8 @@ struct TheReelPeetEvo : Module {
     return anyActive ? best / 12.f : volts;
   }
 
-  // Effective entropy for phrase p on this roll: the knob's set value plus
-  // a random offset scaled by the global Jitter knob (max +-0.3 at full
-  // CW), re-rolled every call. This is what keeps 4 phrases with identical
-  // Entropy settings from evolving in lockstep, without any per-phrase
-  // Jitter knob. At Jitter=0 this is exactly the knob's value, unchanged.
   float entropyOf(int p) {
-    float base = params[ENTROPY_PARAM + p].getValue();
-    float jitterAmt = params[JITTER_PARAM].getValue() * 0.3f;
-    float delta = (random::uniform() * 2.f - 1.f) * jitterAmt;
-    return clamp(base + delta, 0.f, 1.f);
+    return params[ENTROPY_PARAM + p].getValue();
   }
 
   // The one "musical mutation" primitive, used everywhere a step deviates
@@ -363,6 +365,14 @@ struct TheReelPeetEvo : Module {
   // the smoothing on a step that stays silent/held regardless.
   void closeLoopSeam(float *arr, int *typeArr = nullptr) {
     if (len <= 1) return;  // no wrap to smooth for a 1-step "loop"
+    // A tie is always immediately followed by a rest (see reseedPhrase) -
+    // if the step right before this wrap point is a tie, forcing this one
+    // back to NORMAL would silently break that guarantee right at the
+    // seam. Honor it here instead of overwriting it.
+    if (typeArr && len >= 2 && typeArr[len - 2] == STEP_TIE) {
+      typeArr[len - 1] = STEP_REST;
+      return;
+    }
     arr[len - 1] = musicalStep(arr[0], kMutationSigma);
     if (typeArr) typeArr[len - 1] = STEP_NORMAL;
   }
@@ -398,6 +408,18 @@ struct TheReelPeetEvo : Module {
   void reseedPhrase(int p) {
     float driftP = entropyOf(p);
     for (int i = 0; i < 16; i++) {
+      // A tie is always immediately followed by a rest - caps a hold at
+      // exactly one extra step instead of letting ties chain indefinitely,
+      // and gives the note a clear release before the next retrigger
+      // instead of bleeding straight into it. Forced regardless of the
+      // deviation roll below.
+      if (i > 0 && poolType[p][i - 1] == STEP_TIE) {
+        poolType[p][i] = STEP_REST;
+        pool[p][i] = master[i];
+        poolGenesis[p][i] = pool[p][i];
+        poolGenesisType[p][i] = poolType[p][i];
+        continue;
+      }
       float stepDriftP = isAnchorStep(i) ? driftP * kAnchorMutationScale : driftP;
       if (random::uniform() < stepDriftP) {
         float sub = random::uniform();
@@ -432,10 +454,33 @@ struct TheReelPeetEvo : Module {
   // (unlike the old time-based phraseTimer, an integer loop count has no
   // fractional remainder worth preserving, so a hard reset to 0 is always
   // correct here).
-  static constexpr float kRecallChance = 0.15f;
+  static constexpr float kRecallChance = 0.25f;
+  // A phrase's genesis snapshot is only worth recalling once its live pool
+  // has actually diverged from it - reseedPhrase() sets pool[]==poolGenesis[]
+  // exactly, and evolveAllPhrases() is the only thing that ever writes pool[]
+  // afterward, so a straight comparison reliably detects "nothing to recall
+  // from yet" (true right after genesis, and again for any phrase reseeded
+  // by reactivating its Active toggle). Only checks the first len steps -
+  // the backing arrays are always 16 slots regardless of Length, but a
+  // phrase diverging only in steps beyond the currently audible range
+  // wouldn't actually sound any different if recalled.
+  bool phraseHasDiverged(int p) {
+    for (int i = 0; i < len; i++) {
+      if (poolType[p][i] != poolGenesisType[p][i]) return true;
+      if (pool[p][i] != poolGenesis[p][i]) return true;
+    }
+    return false;
+  }
   void selectPhrase(int idx) {
     currentPhraseIdx = idx;
-    usingGenesisNow = random::uniform() < kRecallChance;
+    usingGenesisNow = phraseHasDiverged(idx) && (random::uniform() < kRecallChance);
+    // Converts a mutation that happened while this phrase wasn't playing
+    // into an actual Drift flash now, exactly as its own turn begins - see
+    // pendingDrift's declaration.
+    if (pendingDrift[idx]) {
+      mutationFlash[idx] = 1.f;
+      pendingDrift[idx] = false;
+    }
   }
 
 
@@ -453,8 +498,7 @@ struct TheReelPeetEvo : Module {
   // and persist (whether it actually gets replaced) are the same knob,
   // inversely coupled (drift = entropy, persist = 1 - entropy). Entropy is
   // rolled once per phrase per generation (via entropyOf) and reused for
-  // both halves, so Jitter can't decouple drift/persist from each other
-  // within a single generation - it only varies entropy generation to
+  // both halves, so drift/persist always move together within a single
   // generation. Candidates are computed from a snapshot of the pool before
   // any writes happen, so every phrase's crossover partner is last round's
   // content, not a partially-updated mix.
@@ -482,6 +526,17 @@ struct TheReelPeetEvo : Module {
       int split = 1 + (int)(random::uniform() * 14.f);  // 1..14
       for (int i = 0; i < 16; i++) {
         candidates[p][i] = (i < split) ? pool[p][i] : pool[partner][i];
+        // Same rule as reseedPhrase: a tie is always immediately followed
+        // by a rest. Checked against the just-resolved candidateType[i-1]
+        // rather than the pre-crossover pool, so it also repairs the case
+        // where the crossover split point itself lands between an
+        // inherited tie and its rest (each side of the splice satisfied
+        // the invariant in its own source pool, but splicing between them
+        // doesn't guarantee it holds across the seam).
+        if (i > 0 && candidateType[p][i - 1] == STEP_TIE) {
+          candidateType[p][i] = STEP_REST;
+          continue;
+        }
         candidateType[p][i] = (i < split) ? poolType[p][i] : poolType[partner][i];
         // Perturbs whatever crossover already produced for this step by a
         // small musicalStep delta, instead of discarding it for an
@@ -508,13 +563,18 @@ struct TheReelPeetEvo : Module {
     // essentially the same values - e.g. low Entropy, or a crossover
     // partner that was already very similar. Flashing Drift for that
     // would tell the user something changed when nothing audible did.
+    // Same reasoning applies to scope: only the first len steps are
+    // checked, since a change confined to steps beyond the currently
+    // audible Length wouldn't be heard either (the full 16-slot backing
+    // store is still updated below regardless - those hidden steps keep
+    // evolving even while unheard, just shouldn't trigger the light).
     const float kAudibleChangeThreshold = 0.01f;  // ~0.12 semitones
     for (int k = 0; k < n; k++) {
       int p = activeIdx[k];
       float persistP = 1.f - entropyRoll[p];
       if (random::uniform() >= persistP) {
         bool audiblyChanged = false;
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < len; i++) {
           if (candidateType[p][i] != poolType[p][i]) {
             audiblyChanged = true;
             break;
@@ -530,7 +590,7 @@ struct TheReelPeetEvo : Module {
         }
         closeLoopSeam(pool[p], poolType[p]);
         if (audiblyChanged)
-          mutationFlash[p] = 1.f;
+          pendingDrift[p] = true;
       }
     }
   }
@@ -648,6 +708,15 @@ struct TheReelPeetEvo : Module {
         // read whichever step is about to play.
         const int *playingType = usingGenesisNow ? poolGenesisType[currentPhraseIdx] : poolType[currentPhraseIdx];
         int stepType = playingType[step];
+        // A short Fall time reaches idle well before the *next* clock edge
+        // - freezing only during the tie step itself froze a level that
+        // had already decayed to zero during the note before it. Freezing
+        // one step early too (whenever the step about to play is a tie)
+        // stops that decay before it happens, so there's still something
+        // to hold by the time the tie lands. Rests never freeze - nothing
+        // to hold, they should stay silent regardless of what follows.
+        bool nextIsTie = playingType[(step + 1) % len] == STEP_TIE;
+        envFrozen = (stepType == STEP_TIE) || (stepType != STEP_REST && nextIsTie);
 
         if (stepType == STEP_REST) {
           // Forces an early decay - using the existing Fall-time ramp, so
@@ -658,12 +727,20 @@ struct TheReelPeetEvo : Module {
           if (envPhase != ENV_IDLE)
             envPhase = ENV_DECAY;
         } else if (stepType == STEP_TIE) {
-          // Deliberately does nothing - heldCV and envPhase both carry
-          // straight through untouched, so whatever was already playing
-          // (attack, decay, or steady state) just continues uninterrupted
-          // across this step instead of being re-plucked with a fresh
-          // attack, extending the previous note instead of repeating it.
-        } else if (envPhase == ENV_IDLE) {
+          // heldCV/envPhase carry straight through untouched (no
+          // retrigger), and envFrozen (set above) pauses the ramp itself
+          // for this step's duration - without freezing the ramp too, a
+          // short Fall time would already have decayed to silence by the
+          // time a tie lands, making it indistinguishable from a rest.
+        } else {
+          // Always retriggers, regardless of envPhase - a step sequencer
+          // should always cut off whatever's still sounding and start the
+          // new note (ENV_ATTACK ramps up from wherever envLevel currently
+          // sits, so this doesn't click). The old envPhase==ENV_IDLE gate
+          // here was Dynamics-era leftover logic - with envFrozen now able
+          // to hold envPhase in ATTACK/DECAY across a whole tie chain, that
+          // gate would have silently dropped the real note that follows
+          // the chain instead of playing it.
           const float *playingSeq = usingGenesisNow ? poolGenesis[currentPhraseIdx] : pool[currentPhraseIdx];
           trigTimer = 0.01f;
           // Both quantizers are optional (all lights off = ignored, CV
@@ -698,6 +775,7 @@ struct TheReelPeetEvo : Module {
       trigTimer = 0.f;
       envLevel = 0.f;
       envPhase = ENV_IDLE;
+      envFrozen = false;
       loopsCompleted = 0;
     }
 
@@ -761,6 +839,12 @@ struct TheReelPeetEvo : Module {
       lights[NOTE_LIGHT_R + i].setBrightness(std::max(noteActiveR[i] ? noteBaseBrightness : 0.f, playFlashR[i]));
     }
 
+    // Attack always progresses, even on a step envFrozen is holding for an
+    // upcoming tie - freezing it too would leave a note that's about to be
+    // tied into stuck silent at envLevel 0 for the whole step (never even
+    // got to rise), which a later real step would then just overwrite
+    // before it was ever heard. Only decay needs to pause - that's what
+    // actually preserves something worth holding across a tie.
     if (envPhase == ENV_ATTACK) {
       if (riseTime < 0.001f) {
         envLevel = 10.f;
@@ -770,7 +854,7 @@ struct TheReelPeetEvo : Module {
       }
       if (envLevel >= 10.f)
         envPhase = ENV_DECAY;
-    } else if (envPhase == ENV_DECAY) {
+    } else if (envPhase == ENV_DECAY && !envFrozen) {
       if (fallTime < 0.001f) {
         envLevel = 0.f;
         envPhase = ENV_IDLE;
@@ -1008,13 +1092,12 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float lengthY   = 33.f;
     const float dispY     = 37.f;
     // BPM knob is gone - the module is externally clocked now (see Clock
-    // In below). Jitter and Rise/Fall were evenly spaced (23mm steps)
-    // between Length and the output row; Jitter (and its label, which
-    // follows it) then nudged down 4mm further per feedback.
-    const float jitterY   = 60.f;
+    // In below). Jitter (raw y=60) was removed entirely (see entropyOf) -
+    // that slot is deliberately left open for a future control rather than
+    // reclaimed by Rise/Fall, which stay at their existing position.
     const float riseFallY = 79.f;
     // The CV row (outputs + new Clock In) stays anchored near the bottom
-    // rather than following Jitter/Rise/Fall up, leaving open space above it.
+    // rather than following Rise/Fall up, leaving open space above it.
     const float outY      = 102.f;
     const float clockInY  = 113.f;
 
@@ -1072,7 +1155,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(laneXL, runY)), module, TheReelPeetEvo::RUN_LIGHT));
 
     addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, lengthY)), module, TheReelPeetEvo::LENGTH_PARAM));
-    addParam(createParamCentered<RoundBlackKnob>(mm2px(Vec(laneXL, jitterY)), module, TheReelPeetEvo::JITTER_PARAM));
 
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
@@ -1156,7 +1238,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       // on the new panel width — see res/TheReelPeetEvo.svg.
 
       addLabel("Run", laneXL, runY + 4.f, dispW, 9.f);
-      addLabel("Jitter", laneXL, jitterY + 6.f, dispW, 9.f);
       addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
