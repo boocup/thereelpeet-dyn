@@ -268,11 +268,13 @@ struct TheReelPeetEvo : Module {
     // centered 2-octave window instead - still varies run to run, just not
     // at the literal extremes.
     master[0] = 1.5f + random::uniform() * 2.f;
-    // applyLink here (not just in mutateStep) so a linked module's very
-    // first melody already leans toward whatever's on Link In, rather
-    // than only picking up the bias once mutations start happening.
+    // applyHomeGravity and applyLink here too (not just in mutateStep) so
+    // genesis's own walk stays less likely to wander to an extreme by its
+    // own end, and a linked module's very first melody already leans
+    // toward whatever's on Link In, rather than only picking up either
+    // effect once mutations start happening.
     for (int i = 1; i < 16; i++)
-      master[i] = applyLink(musicalStep(master[i - 1], kGenesisSigma));
+      master[i] = applyLink(applyHomeGravity(musicalStep(master[i - 1], kGenesisSigma)));
     for (int p = 0; p < 4; p++)
       reseedPhrase(p);
 
@@ -507,7 +509,26 @@ struct TheReelPeetEvo : Module {
       case ENGINE_INTERVAL: result = intervalStep(value, p); break;
       default:               result = musicalStep(value, kMutationSigma); break;
     }
-    return applyLink(result);
+    return applyLink(applyHomeGravity(result));
+  }
+
+  // Genesis starts every phrase in a centered 2-octave window, but nothing
+  // afterward pulls values back toward that home register - ongoing
+  // mutation is an unbiased walk across the full 0-5V range, reflected at
+  // the edges but with no restoring force. Over a long session that's
+  // enough steps for the walk to occasionally wander into an extreme
+  // register purely by chance (reported on real hardware as a rare,
+  // unexpected high note with no other cause - not a bug, just an
+  // unbiased random walk eventually visiting its extremes given enough
+  // steps). A weak, constant pull back toward the same center genesis
+  // already uses (2.5V, the middle of its 1.5-3.5V starting window) makes
+  // that a much rarer outlier without noticeably taming the walk's
+  // character on any single step - the pull only becomes meaningful once
+  // a value has already drifted well away from center.
+  static constexpr float kHomeRegister = 2.5f;
+  static constexpr float kHomeGravity = 0.05f;
+  float applyHomeGravity(float value) {
+    return clamp(value + kHomeGravity * (kHomeRegister - value), 0.f, 5.f);
   }
 
   // Lets one module's current pitch gently bias another's random walk
