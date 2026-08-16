@@ -93,7 +93,7 @@ struct TheReelPeetEvo : Module {
     NOTE_PARAM_R = NOTE_PARAM_L + 12,     // NOTE_PARAM_R + 0..11
     PARAMS_LEN = NOTE_PARAM_R + 12
   };
-  enum InputId { CLOCK_INPUT, INPUTS_LEN };
+  enum InputId { CLOCK_INPUT, LINK_INPUT, INPUTS_LEN };
   enum OutputId { OUT_OUTPUT, ENV_OUTPUT, OUTPUTS_LEN };
   enum LightId {
     RUN_LIGHT,
@@ -229,6 +229,7 @@ struct TheReelPeetEvo : Module {
     }
 
     configInput(CLOCK_INPUT, "Clock");
+    configInput(LINK_INPUT, "Link CV (1V/oct external pitch to gently bias this module's mutations toward)");
     configOutput(OUT_OUTPUT, "Pitch CV (1V/Oct)");
     configOutput(ENV_OUTPUT, "Envelope CV (0-10V)");
     configLight(RUN_LIGHT, "Running");
@@ -264,8 +265,11 @@ struct TheReelPeetEvo : Module {
     // centered 2-octave window instead - still varies run to run, just not
     // at the literal extremes.
     master[0] = 1.5f + random::uniform() * 2.f;
+    // applyLink here (not just in mutateStep) so a linked module's very
+    // first melody already leans toward whatever's on Link In, rather
+    // than only picking up the bias once mutations start happening.
     for (int i = 1; i < 16; i++)
-      master[i] = musicalStep(master[i - 1], kGenesisSigma);
+      master[i] = applyLink(musicalStep(master[i - 1], kGenesisSigma));
     for (int p = 0; p < 4; p++)
       reseedPhrase(p);
 
@@ -491,13 +495,33 @@ struct TheReelPeetEvo : Module {
   // walk always calls musicalStep() directly, staying Gaussian regardless
   // (it's the one shared DNA every phrase draws from before any per-phrase
   // engine character applies, and there's no pool history yet to build a
-  // Markov table from at that exact moment).
+  // Markov table from at that exact moment). applyLink is layered on top
+  // regardless of engine - see applyLink's own comment.
   float mutateStep(float value, int p) {
+    float result;
     switch (mutationEngine) {
-      case ENGINE_MARKOV:   return markovStep(value, p);
-      case ENGINE_INTERVAL: return intervalStep(value, p);
-      default:               return musicalStep(value, kMutationSigma);
+      case ENGINE_MARKOV:   result = markovStep(value, p); break;
+      case ENGINE_INTERVAL: result = intervalStep(value, p); break;
+      default:               result = musicalStep(value, kMutationSigma); break;
     }
+    return applyLink(result);
+  }
+
+  // Lets one module's current pitch gently bias another's random walk
+  // toward it when LINK_INPUT is patched (typically from another
+  // instance's own OUT_OUTPUT) - a small pull each time, not a hard
+  // override, so two linked modules feel related without becoming exact
+  // copies of each other (which would just sound like unison doubling).
+  // Deliberately orthogonal to Model/engine selection - Link answers "is
+  // this related to another module," engine answers "which algorithm
+  // shapes drift," and they should compose regardless of which engine is
+  // active. Unpatched behavior is completely unchanged.
+  static constexpr float kLinkPull = 0.2f;
+  float applyLink(float value) {
+    if (!inputs[LINK_INPUT].isConnected())
+      return value;
+    float target = inputs[LINK_INPUT].getVoltage();
+    return clamp(value + kLinkPull * (target - value), 0.f, 5.f);
   }
 
   // pool[]/poolGenesis[] are always a fixed 16-slot chain (each step built
@@ -1396,7 +1420,10 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, outY)), module, TheReelPeetEvo::OUT_OUTPUT));
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, outY)), module, TheReelPeetEvo::ENV_OUTPUT));
 
-    addInput(createInputCentered<PJ301MPort>(mm2px(Vec(laneXL, clockInY)), module, TheReelPeetEvo::CLOCK_INPUT));
+    // Paired with Link at this row, same convention as Out/Gate pairing
+    // one row up - Clock moves off-center to make room.
+    addInput(createInputCentered<PJ301MPort>(mm2px(Vec(laneXL - cvDX, clockInY)), module, TheReelPeetEvo::CLOCK_INPUT));
+    addInput(createInputCentered<PJ301MPort>(mm2px(Vec(laneXL + cvDX, clockInY)), module, TheReelPeetEvo::LINK_INPUT));
 
     for (int p = 0; p < 4; p++) {
       float colLeft = poolColLeft[p % 2];
@@ -1446,7 +1473,8 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
       addLabel("Gate", laneXL + cvDX, outY + 3.5f, dispW2, 8.f);
-      addLabel("Clock", laneXL, clockInY + 3.5f, dispW, 8.f);
+      addLabel("Clock", laneXL - cvDX, clockInY + 3.5f, dispW2, 8.f);
+      addLabel("Link", laneXL + cvDX, clockInY + 3.5f, dispW2, 8.f);
 
       for (int p = 0; p < 4; p++) {
         float colLeft = poolColLeft[p % 2];
