@@ -1204,15 +1204,21 @@ struct EvoStaticLabel : TransparentWidget {
   }
 };
 
-// A thin stroked rectangle, no fill - used to set the Model select group
-// (button + 3 engine rows) apart from the rest of the global lane.
+// A translucent rounded-rect fill (no stroke) - sets the Model select
+// group (button + 3 engine rows) apart from the rest of the global lane.
+// Dark shade of the lane's own red (#d94a4a, see laneLeft in
+// res/TheReelPeetEvo.svg) at the same 18% opacity the pool boxes already
+// use for their own accent tints, so it reads as belonging to this panel's
+// existing visual language rather than a bolted-on outline.
 struct EvoGroupBox : TransparentWidget {
+  NVGcolor color = nvgRGBA(0x82, 0x2c, 0x2c, 46);
+
   void draw(const DrawArgs &args) override {
+    float r = mm2px(Vec(2.4f, 0.f)).x;
     nvgBeginPath(args.vg);
-    nvgRect(args.vg, 0.5f, 0.5f, box.size.x - 1.f, box.size.y - 1.f);
-    nvgStrokeColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgStrokeWidth(args.vg, 1.f);
-    nvgStroke(args.vg);
+    nvgRoundedRect(args.vg, 0.5f, 0.5f, box.size.x - 1.f, box.size.y - 1.f, r);
+    nvgFillColor(args.vg, color);
+    nvgFill(args.vg);
   }
 };
 
@@ -1257,8 +1263,10 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // engine select: a cycling button + label on top, a 3-row list below
     // it (light + full name per engine, see mutateStep/Engine), the whole
     // group boxed off with EvoGroupBox to set it apart from the rest of
-    // the global lane - moved up and Rise/Fall moved down to give it room.
-    const float engineY = 52.f;
+    // the global lane. Centered in the vertical gap between the Steps
+    // display and the top of the Rise/Fall knobs, nudged up 2mm from the
+    // exact midpoint per feedback (read as sitting a bit low at 57).
+    const float engineY = 55.f;
     // Shared left/right columns for the whole Model group - button and
     // engine lights share the left column, "Model" and the engine names
     // share the right column, so everything lines up vertically.
@@ -1430,7 +1438,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       // -2.5f box-top offset trick as the engine rows below, so the 5mm
       // label box centers its text on the button's own y). Engine names
       // follow the same pattern, one per row, sharing modelColR.
-      addLabel("Model", modelColR, engineY - 2.5f, modelLabelW, 9.f);
+      addLabel("Model", modelColR, engineY - 2.5f, modelLabelW, 9.f, true);
       addLabel("Gaussian", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN] - 2.5f, modelLabelW, 8.f);
       addLabel("Markov", modelColR, engineRowY[TheReelPeetEvo::ENGINE_MARKOV] - 2.5f, modelLabelW, 8.f);
       addLabel("Interval", modelColR, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL] - 2.5f, modelLabelW, 8.f);
