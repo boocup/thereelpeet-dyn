@@ -1458,10 +1458,42 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // toward white. Blue nudged from 25% to 35% now that the numerals are
     // bigger/bolder and read heavier at the same color; orange left at
     // 50% since that one wasn't flagged.
+#ifdef METAMODULE
+    // MetaModule's own nanovg_pixbuf_util.hh::to_lv_text_color() forces any
+    // non-greyscale text color to max brightness + boosted saturation
+    // (a legibility safeguard, presumably) - our soft pastel tints get
+    // turned into vivid, fully-saturated versions of the same hue, which
+    // read as visibly darker than the pastel original despite technically
+    // being "full brightness" in HSV terms (reported on real hardware:
+    // numerals looked noticeably darker than on VCV Rack, which applies no
+    // such transform). A literal greyscale color (r==g==b) is the one case
+    // that function passes through unchanged, so that's the only way to
+    // get predictable brightness here - trades the per-pool hue match for
+    // full control, MetaModule-only.
+    // First attempt at this grey (0xb8b8b8) made the numerals disappear
+    // entirely - turned out to be the exact same hex value as the panel's
+    // own background gradient's bottom stop (see bgGradEvo/stopEvo2 in
+    // res/TheReelPeetEvo.svg, #d0d0d0 -> #b8b8b8) - the numeral was
+    // rendering correctly, just in a color identical to what's behind it.
+    // Second attempt (0x606060) went dark for guaranteed contrast, but
+    // read heavier than intended. Third attempt (0xf0f0f0), lighter than
+    // the panel's own #d0d0d0 max, read as plain white instead - and per
+    // renderText() in the firmware's nanovg_pixbuf.cc, text opacity is
+    // hardcoded to LV_OPA_100 (the real alpha-handling line is commented
+    // out), so translucency isn't available as a softening option at all
+    // on this platform, only lightness. Splitting the difference: a
+    // genuinely light-medium grey, clearly lighter than 0x606060 without
+    // reading as flat white.
+    NVGcolor poolColors[4] = {
+      nvgRGB(0xa0, 0xa0, 0xa0), nvgRGB(0xa0, 0xa0, 0xa0),
+      nvgRGB(0xa0, 0xa0, 0xa0), nvgRGB(0xa0, 0xa0, 0xa0),
+    };
+#else
     NVGcolor poolColors[4] = {
       nvgRGB(0x89, 0xa7, 0xe6), nvgRGB(0xec, 0xc1, 0xa5),
       nvgRGB(0x89, 0xa7, 0xe6), nvgRGB(0xec, 0xc1, 0xa5),
     };
+#endif
     for (int p = 0; p < 4; p++) {
       auto *numeral = new EvoPoolNumeral;
       numeral->box.pos = mm2px(Vec(poolColLeft[p % 2], poolRowTop[p / 2]));
