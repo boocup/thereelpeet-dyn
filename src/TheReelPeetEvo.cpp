@@ -1,4 +1,5 @@
 #include "plugin.hpp"
+#include "EvoGruWeights.h"
 
 using namespace rack;
 using namespace rack::componentlibrary;
@@ -100,8 +101,8 @@ struct TheReelPeetEvo : Module {
     ACTIVE_LIGHT,                      // ACTIVE_LIGHT + 0..3
     RECALL_LIGHT = ACTIVE_LIGHT + 4,   // RECALL_LIGHT + 0..3
     DRIFT_LIGHT = RECALL_LIGHT + 4,    // DRIFT_LIGHT + 0..3
-    ENGINE_LIGHT = DRIFT_LIGHT + 4,    // ENGINE_LIGHT + 0..2, one per Engine value
-    NOTE_LIGHT_L = ENGINE_LIGHT + 3,   // NOTE_LIGHT_L + 0..11
+    ENGINE_LIGHT = DRIFT_LIGHT + 4,    // ENGINE_LIGHT + 0..3, one per Engine value
+    NOTE_LIGHT_L = ENGINE_LIGHT + 4,   // NOTE_LIGHT_L + 0..11
     NOTE_LIGHT_R = NOTE_LIGHT_L + 12,  // NOTE_LIGHT_R + 0..11
     LIGHTS_LEN = NOTE_LIGHT_R + 12
   };
@@ -109,8 +110,10 @@ struct TheReelPeetEvo : Module {
   // Global mutation engine, selectable via ENGINE_PARAM's cycling button -
   // affects only the mutation-sigma-scale deviation in reseedPhrase(),
   // evolveAllPhrases(), and closeLoopSeam(); genesis()'s own master[] walk
-  // always stays Gaussian regardless (see mutateStep()).
-  enum Engine { ENGINE_GAUSSIAN, ENGINE_MARKOV, ENGINE_INTERVAL, NUM_ENGINES };
+  // always stays Gaussian regardless (see mutateStep()). ENGINE_GRU is a
+  // real trained model (see EvoGruWeights.h/gruStep) - named for the
+  // technique, not branded "AI", same as Markov isn't either.
+  enum Engine { ENGINE_GAUSSIAN, ENGINE_MARKOV, ENGINE_INTERVAL, ENGINE_GRU, NUM_ENGINES };
 
   bool running = false;
   int step = 0;
@@ -199,7 +202,7 @@ struct TheReelPeetEvo : Module {
     // Momentary button, same pattern as ACTIVE_PARAM - the param itself is
     // just an edge source (see engineTrig in process()), the actual choice
     // lives in mutationEngine and cycles Gaussian -> Markov -> Interval.
-    configParam(ENGINE_PARAM, 0.f, 1.f, 0.f, "Cycle mutation engine (Gaussian/Markov/Interval)");
+    configParam(ENGINE_PARAM, 0.f, 1.f, 0.f, "Cycle mutation engine (Gaussian/Markov/Interval/AI)");
     // Rise's range used to be half of Fall's (0-2s vs 0-4s) - same knob
     // position meant very different times between the two, confusing.
     // Matched to Fall's 0-4s range so the pair reads consistently.
@@ -239,6 +242,7 @@ struct TheReelPeetEvo : Module {
     configLight(ENGINE_LIGHT + (int)ENGINE_GAUSSIAN, "Gaussian engine active");
     configLight(ENGINE_LIGHT + (int)ENGINE_MARKOV, "Markov engine active");
     configLight(ENGINE_LIGHT + (int)ENGINE_INTERVAL, "Interval-locked engine active");
+    configLight(ENGINE_LIGHT + (int)ENGINE_GRU, "AI (experimental) engine active - a small trained GRU model");
 
     genesis();
   }
@@ -494,19 +498,92 @@ struct TheReelPeetEvo : Module {
     return clamp(lattice[target] / 12.f, 0.f, 5.f);
   }
 
+  // A real trained model (a small GRU recurrent network), unlike Markov's
+  // live-built-from-nothing table - trained offline on the Nottingham
+  // Database (1034 public-domain folk tunes), predicting the next
+  // semitone class from the kGruContext (8) preceding classes. Weights
+  // are compiled in (EvoGruWeights.h) - no runtime loading, no ML
+  // framework, just the hand-written forward pass below. Context is read
+  // from phrase p's own live pool[] (same choice markovStep already
+  // makes - the phrase's current content, not the in-progress candidate
+  // array evolveAllPhrases() may be mid-building), the kGruContext steps
+  // immediately preceding index i, wrapping around the 16-slot array.
+  // Hidden state always starts at zero and replays the full context each
+  // call, matching exactly how each training example was constructed -
+  // there's no persistent memory carried between mutation events.
+  float gruStep(float value, int p, int i) {
+    float h[kGruHidden] = {};
+    for (int t = 0; t < kGruContext; t++) {
+      int idx = ((i - kGruContext + t) % 16 + 16) % 16;
+      int cls = semitoneClass(pool[p][idx]);
+      float x[kGruVocab] = {};
+      x[cls] = 1.f;
+      float z[kGruHidden], r[kGruHidden], hTilde[kGruHidden];
+      for (int u = 0; u < kGruHidden; u++) {
+        float zsum = kGruBz[u], rsum = kGruBr[u];
+        for (int vIn = 0; vIn < kGruVocab; vIn++) {
+          zsum += x[vIn] * kGruWz[vIn][u];
+          rsum += x[vIn] * kGruWr[vIn][u];
+        }
+        for (int vHid = 0; vHid < kGruHidden; vHid++) {
+          zsum += h[vHid] * kGruUz[vHid][u];
+          rsum += h[vHid] * kGruUr[vHid][u];
+        }
+        z[u] = 1.f / (1.f + std::exp(-zsum));
+        r[u] = 1.f / (1.f + std::exp(-rsum));
+      }
+      for (int u = 0; u < kGruHidden; u++) {
+        float hsum = kGruBh[u];
+        for (int vIn = 0; vIn < kGruVocab; vIn++)
+          hsum += x[vIn] * kGruWh[vIn][u];
+        for (int vHid = 0; vHid < kGruHidden; vHid++)
+          hsum += (r[vHid] * h[vHid]) * kGruUh[vHid][u];
+        hTilde[u] = std::tanh(hsum);
+      }
+      for (int u = 0; u < kGruHidden; u++)
+        h[u] = (1.f - z[u]) * h[u] + z[u] * hTilde[u];
+    }
+    float logits[kGruVocab];
+    for (int c = 0; c < kGruVocab; c++) {
+      float sum = kGruBy[c];
+      for (int u = 0; u < kGruHidden; u++)
+        sum += h[u] * kGruWy[u][c];
+      logits[c] = sum;
+    }
+    float maxLogit = logits[0];
+    for (int c = 1; c < kGruVocab; c++)
+      maxLogit = std::max(maxLogit, logits[c]);
+    float probs[kGruVocab];
+    float total = 0.f;
+    for (int c = 0; c < kGruVocab; c++) {
+      probs[c] = std::exp(logits[c] - maxLogit);
+      total += probs[c];
+    }
+    float pick = random::uniform() * total;
+    int toClass = 0;
+    for (int c = 0; c < kGruVocab; c++) {
+      if (pick < probs[c]) { toClass = c; break; }
+      pick -= probs[c];
+    }
+    return nearestOctaveForClass(value, toClass);
+  }
+
   // Dispatches mutation-sigma-scale deviations to whichever engine the
   // user has selected. Only affects the mutation calls in reseedPhrase(),
   // evolveAllPhrases(), and closeLoopSeam() - genesis()'s own master[]
   // walk always calls musicalStep() directly, staying Gaussian regardless
   // (it's the one shared DNA every phrase draws from before any per-phrase
   // engine character applies, and there's no pool history yet to build a
-  // Markov table from at that exact moment). applyLink is layered on top
-  // regardless of engine - see applyLink's own comment.
-  float mutateStep(float value, int p) {
+  // Markov table or feed the GRU a real context at that exact moment).
+  // applyLink is layered on top regardless of engine - see applyLink's
+  // own comment. i is this step's index within the 16-slot pool array,
+  // needed only by gruStep for positional context.
+  float mutateStep(float value, int p, int i) {
     float result;
     switch (mutationEngine) {
       case ENGINE_MARKOV:   result = markovStep(value, p); break;
       case ENGINE_INTERVAL: result = intervalStep(value, p); break;
+      case ENGINE_GRU:       result = gruStep(value, p, i); break;
       default:               result = musicalStep(value, kMutationSigma); break;
     }
     return applyLink(applyHomeGravity(result));
@@ -573,7 +650,7 @@ struct TheReelPeetEvo : Module {
       typeArr[len - 1] = STEP_REST;
       return;
     }
-    arr[len - 1] = mutateStep(arr[0], p);
+    arr[len - 1] = mutateStep(arr[0], p, len - 1);
     if (typeArr) typeArr[len - 1] = STEP_NORMAL;
   }
 
@@ -631,7 +708,7 @@ struct TheReelPeetEvo : Module {
           pool[p][i] = master[i];
         } else {
           poolType[p][i] = STEP_NORMAL;
-          pool[p][i] = mutateStep(master[i], p);
+          pool[p][i] = mutateStep(master[i], p, i);
         }
       } else {
         poolType[p][i] = STEP_NORMAL;
@@ -752,7 +829,7 @@ struct TheReelPeetEvo : Module {
           } else if (sub < kRestFraction + kTieFraction) {
             candidateType[p][i] = STEP_TIE;
           } else {
-            candidates[p][i] = mutateStep(candidates[p][i], p);
+            candidates[p][i] = mutateStep(candidates[p][i], p, i);
             candidateType[p][i] = STEP_NORMAL;
           }
         }
@@ -1239,6 +1316,7 @@ struct EvoStaticLabel : TransparentWidget {
   std::string text;
   float fontSize = 9.f;
   bool bold = false;
+  bool leftAlign = false;  // Model group's list reads better left-justified than centered
 
   void draw(const DrawArgs &args) override {
     nvgFontFaceId(args.vg, APP->window->uiFont->handle);
@@ -1247,11 +1325,16 @@ struct EvoStaticLabel : TransparentWidget {
     // favoring pool1's red family - matches EvoLengthDisplay's "8 Steps"
     // text, which already used plain black.
     nvgFillColor(args.vg, nvgRGB(0x00, 0x00, 0x00));
-    nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
     nvgFontSize(args.vg, fontSize);
     if (bold)
       nvgFontBlur(args.vg, 0.15f);
-    nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.5f, text.c_str(), nullptr);
+    if (leftAlign) {
+      nvgTextAlign(args.vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+      nvgText(args.vg, 0.f, box.size.y * 0.5f, text.c_str(), nullptr);
+    } else {
+      nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+      nvgText(args.vg, box.size.x * 0.5f, box.size.y * 0.5f, text.c_str(), nullptr);
+    }
   }
 };
 
@@ -1311,25 +1394,32 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     const float dispY     = 37.f;
     // BPM knob is gone - the module is externally clocked now (see Clock
     // In below). Jitter's old raw-y=60 slot is now the "Model" mutation-
-    // engine select: a cycling button + label on top, a 3-row list below
+    // engine select: a cycling button + label on top, a 4-row list below
     // it (light + full name per engine, see mutateStep/Engine), the whole
     // group boxed off with EvoGroupBox to set it apart from the rest of
-    // the global lane. Centered in the vertical gap between the Steps
-    // display and the top of the Rise/Fall knobs, nudged up 2mm from the
-    // exact midpoint per feedback (read as sitting a bit low at 57).
+    // the global lane. Rise/Fall pushed further down to make room for the
+    // 4th row (GRU) added after Gaussian/Markov/Interval.
     const float engineY = 55.f;
     // Shared left/right columns for the whole Model group - button and
     // engine lights share the left column, "Model" and the engine names
     // share the right column, so everything lines up vertically.
-    const float modelColL = laneXL - 7.f;
-    const float modelColR = laneXL + 4.f;
-    const float modelLabelW = 16.f;
-    const float engineRowY[3] = {engineY + 7.f, engineY + 13.f, engineY + 19.f};
-    const float riseFallY = 88.f;
-    // The CV row (outputs + new Clock In) stays anchored near the bottom
-    // rather than following Rise/Fall up, leaving open space above it.
-    const float outY      = 102.f;
-    const float clockInY  = 113.f;
+    // Shifted further left per feedback ("Experimental" was creeping past
+    // the box's right edge) - the box itself is already close to the
+    // lane's own left edge, so most of the extra room comes from
+    // tightening the light-to-text gap rather than moving the box more.
+    const float modelColL = laneXL - 11.f;
+    // Left-justified list reads better than centered - modelColR is now
+    // the text's left edge, not its center.
+    const float modelColR = laneXL - 6.f;
+    const float modelLabelW = 26.f;
+    const float engineRowY[4] = {engineY + 7.f, engineY + 13.f, engineY + 19.f, engineY + 25.f};
+    // Was 94, crowding the Rise/Fall labels right up against the output
+    // jacks below with no breathing room - pulled back up closer to the
+    // (now taller, 4-row) Model box, and the CV rows nudged down to
+    // compensate instead of everything getting cramped into the same gap.
+    const float riseFallY = 92.f;
+    const float outY      = 103.f;
+    const float clockInY  = 114.f;
 
     // 4 phrase pools on the right, arranged as a 2x2 grid (pool1 top-left,
     // pool2 top-right, pool3 bottom-left, pool4 bottom-right) rather than
@@ -1390,8 +1480,8 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // on top of them - sized to enclose the button+label row and all 3
     // engine rows with a small margin.
     auto *modelBox = new EvoGroupBox;
-    modelBox->box.pos = mm2px(Vec(laneXL - 12.f, engineY - 5.f));
-    modelBox->box.size = mm2px(Vec(24.f, 29.f));
+    modelBox->box.pos = mm2px(Vec(laneXL - 14.f, engineY - 5.f));
+    modelBox->box.size = mm2px(Vec(30.f, 35.f));
     addChild(modelBox);
 
     addParam(createParamCentered<LEDButton>(mm2px(Vec(modelColL, engineY)), module, TheReelPeetEvo::ENGINE_PARAM));
@@ -1402,6 +1492,7 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_GAUSSIAN));
     addChild(createLightCentered<MediumLight<YellowLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_MARKOV])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_MARKOV));
     addChild(createLightCentered<MediumLight<RedLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_INTERVAL));
+    addChild(createLightCentered<MediumLight<BlueLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_GRU])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_GRU));
 
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
@@ -1473,13 +1564,18 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       const float dispW = 12.f;
       const float dispW2 = 8.f;
 
+      // x is the label's horizontal center, unless leftAlign is set, in
+      // which case x is the left edge the text itself starts at instead
+      // (the box still spans the same width either way, just the text's
+      // anchor point within it changes).
       auto addLabel = [&](const std::string &text, float x, float y, float w,
-                           float fontSize, bool bold = false) {
+                           float fontSize, bool bold = false, bool leftAlign = false) {
         auto *label = new EvoStaticLabel;
         label->text = text;
         label->fontSize = fontSize;
         label->bold = bold;
-        label->box.pos = mm2px(Vec(x - w * 0.5f, y));
+        label->leftAlign = leftAlign;
+        label->box.pos = mm2px(Vec(leftAlign ? x : x - w * 0.5f, y));
         label->box.size = mm2px(Vec(w, 5.f));
         addChild(label);
       };
@@ -1491,11 +1587,23 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       // "Model" sits beside its button, vertically centered on it (same
       // -2.5f box-top offset trick as the engine rows below, so the 5mm
       // label box centers its text on the button's own y). Engine names
-      // follow the same pattern, one per row, sharing modelColR.
-      addLabel("Model", modelColR, engineY - 2.5f, modelLabelW, 9.f, true);
-      addLabel("Gaussian", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN] - 2.5f, modelLabelW, 8.f);
-      addLabel("Markov", modelColR, engineRowY[TheReelPeetEvo::ENGINE_MARKOV] - 2.5f, modelLabelW, 8.f);
-      addLabel("Interval", modelColR, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL] - 2.5f, modelLabelW, 8.f);
+      // follow the same pattern, one per row, sharing modelColR. All
+      // left-justified (reads as a list, not centered captions), and
+      // "Model" bumped to 11pt (was 9pt) so it reads clearly as this
+      // group's header rather than just another row.
+      addLabel("Model", modelColR, engineY - 2.5f, modelLabelW, 11.f, true, true);
+      addLabel("Gaussian", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN] - 2.5f, modelLabelW, 8.f, false, true);
+      addLabel("Markov", modelColR, engineRowY[TheReelPeetEvo::ENGINE_MARKOV] - 2.5f, modelLabelW, 8.f, false, true);
+      addLabel("Interval", modelColR, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL] - 2.5f, modelLabelW, 8.f, false, true);
+      // "AI (Experimental)" - unlike Markov, this genuinely is a trained
+      // model (a small GRU, see gruStep/EvoGruWeights.h), so the label
+      // earns the term rather than overselling it. Spelled out in full
+      // (was "AI(exp)") now that the group's shifted left for the room;
+      // bolded since "AI" alone read ambiguously as "Al" at 8pt regular
+      // weight (capital I and lowercase l are near-identical strokes in
+      // this font at small sizes) - bolding is the cheapest attempt at
+      // disambiguating it before resorting to a different word entirely.
+      addLabel("AI (Experimental)", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GRU] - 2.5f, modelLabelW, 8.f, true, true);
       addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
