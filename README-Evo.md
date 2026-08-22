@@ -1,5 +1,7 @@
 # TheReelPeet-Evo
 
+![TheReelPeet-Evo in VCV Rack](res/TheReelPeetEvo-screenshot.png)
+
 **TheReelPeet-Evo** is a single-lane genetic-algorithm sequencer. Instead of flat randomization, it holds **4 phrases** that evolve over time through elitism, crossover, and mutation — repetition with change, rather than noise.
 
 Each phrase mutates according to a selectable **Model** (Gaussian, Markov, or Interval-locked), can occasionally recall its own original "genesis" version mid-performance, and treats rests and ties as genetic material alongside pitch, not a random roll at playback. A **Link** input lets two instances gently bias each other's pitch, for richer multi-voice patches.
