@@ -1,5 +1,4 @@
 #include "plugin.hpp"
-#include "EvoGruWeights.h"
 
 using namespace rack;
 using namespace rack::componentlibrary;
@@ -101,8 +100,8 @@ struct TheReelPeetEvo : Module {
     ACTIVE_LIGHT,                      // ACTIVE_LIGHT + 0..3
     RECALL_LIGHT = ACTIVE_LIGHT + 4,   // RECALL_LIGHT + 0..3
     DRIFT_LIGHT = RECALL_LIGHT + 4,    // DRIFT_LIGHT + 0..3
-    ENGINE_LIGHT = DRIFT_LIGHT + 4,    // ENGINE_LIGHT + 0..3, one per Engine value
-    NOTE_LIGHT_L = ENGINE_LIGHT + 4,   // NOTE_LIGHT_L + 0..11
+    ENGINE_LIGHT = DRIFT_LIGHT + 4,    // ENGINE_LIGHT + 0..2, one per Engine value
+    NOTE_LIGHT_L = ENGINE_LIGHT + 3,   // NOTE_LIGHT_L + 0..11
     NOTE_LIGHT_R = NOTE_LIGHT_L + 12,  // NOTE_LIGHT_R + 0..11
     LIGHTS_LEN = NOTE_LIGHT_R + 12
   };
@@ -110,10 +109,8 @@ struct TheReelPeetEvo : Module {
   // Global mutation engine, selectable via ENGINE_PARAM's cycling button -
   // affects only the mutation-sigma-scale deviation in reseedPhrase(),
   // evolveAllPhrases(), and closeLoopSeam(); genesis()'s own master[] walk
-  // always stays Gaussian regardless (see mutateStep()). ENGINE_GRU is a
-  // real trained model (see EvoGruWeights.h/gruStep) - named for the
-  // technique, not branded "AI", same as Markov isn't either.
-  enum Engine { ENGINE_GAUSSIAN, ENGINE_MARKOV, ENGINE_INTERVAL, ENGINE_GRU, NUM_ENGINES };
+  // always stays Gaussian regardless (see mutateStep()).
+  enum Engine { ENGINE_GAUSSIAN, ENGINE_MARKOV, ENGINE_INTERVAL, NUM_ENGINES };
 
   bool running = false;
   int step = 0;
@@ -242,7 +239,6 @@ struct TheReelPeetEvo : Module {
     configLight(ENGINE_LIGHT + (int)ENGINE_GAUSSIAN, "Gaussian engine active");
     configLight(ENGINE_LIGHT + (int)ENGINE_MARKOV, "Markov engine active");
     configLight(ENGINE_LIGHT + (int)ENGINE_INTERVAL, "Interval-locked engine active");
-    configLight(ENGINE_LIGHT + (int)ENGINE_GRU, "AI (experimental) engine active - a small trained GRU model");
 
     genesis();
   }
@@ -276,9 +272,11 @@ struct TheReelPeetEvo : Module {
     // genesis's own walk stays less likely to wander to an extreme by its
     // own end, and a linked module's very first melody already leans
     // toward whatever's on Link In, rather than only picking up either
-    // effect once mutations start happening.
+    // effect once mutations start happening. Gravity runs after Link (see
+    // mutateStep's comment) so it always gets the final say against an
+    // extreme Link target, not just against the engine's own output.
     for (int i = 1; i < 16; i++)
-      master[i] = applyLink(applyHomeGravity(musicalStep(master[i - 1], kGenesisSigma)));
+      master[i] = clampToSafeRange(applyHomeGravity(applyLink(musicalStep(master[i - 1], kGenesisSigma))));
     for (int p = 0; p < 4; p++)
       reseedPhrase(p);
 
@@ -498,95 +496,32 @@ struct TheReelPeetEvo : Module {
     return clamp(lattice[target] / 12.f, 0.f, 5.f);
   }
 
-  // A real trained model (a small GRU recurrent network), unlike Markov's
-  // live-built-from-nothing table - trained offline on the Nottingham
-  // Database (1034 public-domain folk tunes), predicting the next
-  // semitone class from the kGruContext (8) preceding classes. Weights
-  // are compiled in (EvoGruWeights.h) - no runtime loading, no ML
-  // framework, just the hand-written forward pass below. Context is read
-  // from phrase p's own live pool[] (same choice markovStep already
-  // makes - the phrase's current content, not the in-progress candidate
-  // array evolveAllPhrases() may be mid-building), the kGruContext steps
-  // immediately preceding index i, wrapping around the 16-slot array.
-  // Hidden state always starts at zero and replays the full context each
-  // call, matching exactly how each training example was constructed -
-  // there's no persistent memory carried between mutation events.
-  float gruStep(float value, int p, int i) {
-    float h[kGruHidden] = {};
-    for (int t = 0; t < kGruContext; t++) {
-      int idx = ((i - kGruContext + t) % 16 + 16) % 16;
-      int cls = semitoneClass(pool[p][idx]);
-      float x[kGruVocab] = {};
-      x[cls] = 1.f;
-      float z[kGruHidden], r[kGruHidden], hTilde[kGruHidden];
-      for (int u = 0; u < kGruHidden; u++) {
-        float zsum = kGruBz[u], rsum = kGruBr[u];
-        for (int vIn = 0; vIn < kGruVocab; vIn++) {
-          zsum += x[vIn] * kGruWz[vIn][u];
-          rsum += x[vIn] * kGruWr[vIn][u];
-        }
-        for (int vHid = 0; vHid < kGruHidden; vHid++) {
-          zsum += h[vHid] * kGruUz[vHid][u];
-          rsum += h[vHid] * kGruUr[vHid][u];
-        }
-        z[u] = 1.f / (1.f + std::exp(-zsum));
-        r[u] = 1.f / (1.f + std::exp(-rsum));
-      }
-      for (int u = 0; u < kGruHidden; u++) {
-        float hsum = kGruBh[u];
-        for (int vIn = 0; vIn < kGruVocab; vIn++)
-          hsum += x[vIn] * kGruWh[vIn][u];
-        for (int vHid = 0; vHid < kGruHidden; vHid++)
-          hsum += (r[vHid] * h[vHid]) * kGruUh[vHid][u];
-        hTilde[u] = std::tanh(hsum);
-      }
-      for (int u = 0; u < kGruHidden; u++)
-        h[u] = (1.f - z[u]) * h[u] + z[u] * hTilde[u];
-    }
-    float logits[kGruVocab];
-    for (int c = 0; c < kGruVocab; c++) {
-      float sum = kGruBy[c];
-      for (int u = 0; u < kGruHidden; u++)
-        sum += h[u] * kGruWy[u][c];
-      logits[c] = sum;
-    }
-    float maxLogit = logits[0];
-    for (int c = 1; c < kGruVocab; c++)
-      maxLogit = std::max(maxLogit, logits[c]);
-    float probs[kGruVocab];
-    float total = 0.f;
-    for (int c = 0; c < kGruVocab; c++) {
-      probs[c] = std::exp(logits[c] - maxLogit);
-      total += probs[c];
-    }
-    float pick = random::uniform() * total;
-    int toClass = 0;
-    for (int c = 0; c < kGruVocab; c++) {
-      if (pick < probs[c]) { toClass = c; break; }
-      pick -= probs[c];
-    }
-    return nearestOctaveForClass(value, toClass);
-  }
-
   // Dispatches mutation-sigma-scale deviations to whichever engine the
   // user has selected. Only affects the mutation calls in reseedPhrase(),
   // evolveAllPhrases(), and closeLoopSeam() - genesis()'s own master[]
   // walk always calls musicalStep() directly, staying Gaussian regardless
   // (it's the one shared DNA every phrase draws from before any per-phrase
   // engine character applies, and there's no pool history yet to build a
-  // Markov table or feed the GRU a real context at that exact moment).
+  // Markov table at that exact moment).
   // applyLink is layered on top regardless of engine - see applyLink's
-  // own comment. i is this step's index within the 16-slot pool array,
-  // needed only by gruStep for positional context.
-  float mutateStep(float value, int p, int i) {
+  // own comment. Home gravity runs *after* Link (not before) deliberately -
+  // it was originally the other way around, and reported on real hardware
+  // as an occasional extreme high note on a linked patch: if the Link
+  // source drifts into a high register (still possible despite its own
+  // home gravity - that's a frequency reduction, not a hard ceiling),
+  // Link's pull toward it was the very last thing applied, so home
+  // gravity's earlier centering got overridden with nothing left to pull
+  // back afterward. Running gravity last means it always gets a final say
+  // regardless of what Link (or the engine) just did, instead of being
+  // undoable by whatever runs after it.
+  float mutateStep(float value, int p) {
     float result;
     switch (mutationEngine) {
       case ENGINE_MARKOV:   result = markovStep(value, p); break;
       case ENGINE_INTERVAL: result = intervalStep(value, p); break;
-      case ENGINE_GRU:       result = gruStep(value, p, i); break;
       default:               result = musicalStep(value, kMutationSigma); break;
     }
-    return applyLink(applyHomeGravity(result));
+    return clampToSafeRange(applyHomeGravity(applyLink(result)));
   }
 
   // Genesis starts every phrase in a centered 2-octave window, but nothing
@@ -625,6 +560,28 @@ struct TheReelPeetEvo : Module {
     return clamp(value + kLinkPull * (target - value), 0.f, 5.f);
   }
 
+  // Home gravity and Link are both soft, probabilistic nudges - enough to
+  // make extreme outliers rare, but nothing stops one from slipping through
+  // (e.g. several unlucky mutation rolls in a row, or Link repeatedly
+  // pulling toward an already-elevated linked module). This is a hard,
+  // deterministic backstop applied last: if a value has drifted into the
+  // outer danger zone, drop/raise it a full octave (1V) rather than just
+  // leaning on it, same as a musician would just play the note an octave
+  // down instead of straining for an absurdly high one. Repeats up to twice
+  // since even after one octave shift a value could still be out of range.
+  // First cut used a +/-2V band (0.5-4.5V) - still let notes reach 4.5V
+  // (2 octaves above the 2.5V home register), reported back as "still very
+  // high." Tightened to +/-1.25V so the ceiling/floor sit closer to what
+  // actually reads as "high"/"low" by ear rather than just short of the
+  // absolute 0-5V rail.
+  static constexpr float kSafeFloor = 1.25f;
+  static constexpr float kSafeCeiling = 3.75f;
+  float clampToSafeRange(float value) {
+    for (int i = 0; i < 2 && (value < kSafeFloor || value > kSafeCeiling); i++)
+      value += (value < kSafeFloor) ? 1.f : -1.f;
+    return clamp(value, 0.f, 5.f);
+  }
+
   // pool[]/poolGenesis[] are always a fixed 16-slot chain (each step built
   // from the previous), but playback treats them as a closed loop of the
   // current, user-adjustable Length - step len-1 wraps straight back to
@@ -650,7 +607,7 @@ struct TheReelPeetEvo : Module {
       typeArr[len - 1] = STEP_REST;
       return;
     }
-    arr[len - 1] = mutateStep(arr[0], p, len - 1);
+    arr[len - 1] = mutateStep(arr[0], p);
     if (typeArr) typeArr[len - 1] = STEP_NORMAL;
   }
 
@@ -708,7 +665,7 @@ struct TheReelPeetEvo : Module {
           pool[p][i] = master[i];
         } else {
           poolType[p][i] = STEP_NORMAL;
-          pool[p][i] = mutateStep(master[i], p, i);
+          pool[p][i] = mutateStep(master[i], p);
         }
       } else {
         poolType[p][i] = STEP_NORMAL;
@@ -720,6 +677,82 @@ struct TheReelPeetEvo : Module {
     closeLoopSeam(pool[p], p, poolType[p]);
     poolGenesis[p][len - 1] = pool[p][len - 1];  // keep them identical, same as every other slot above
     poolGenesisType[p][len - 1] = poolType[p][len - 1];
+    breakQuantizerCollapse(p, true);
+  }
+
+  // The random walk deliberately keeps adjacent raw steps close together
+  // (by design, to avoid octave-jumping noise), but against a quantizer
+  // scale that isn't wide open, two genuinely different raw values can
+  // still land on the same nearest active note - reads as "stuck on one
+  // note," worst at low Entropy (little ongoing mutation to eventually
+  // escape whatever genesis produced) and short Length (a smaller window
+  // where an unlucky locally-clustered stretch of the walk is more
+  // likely). A bigger genesis spread (kGenesisSigma) made this rarer but
+  // never impossible - this actively detects and fixes it instead of
+  // just hoping a big enough sigma avoids it statistically. Scans the
+  // audible NORMAL steps (skipping rests/ties, which don't sound a note,
+  // and wrapping len-1 back to 0 since that's a real musical repeat too)
+  // and nudges any step that quantizes the same as the note right before
+  // it, retrying with a larger sigma until it lands somewhere different
+  // or a retry cap is hit (e.g. only one note active total, where
+  // collapse is genuinely unavoidable).
+  // alsoUpdateGenesis mirrors any fix into poolGenesis too - correct right
+  // after reseedPhrase(), where pool and poolGenesis are meant to start
+  // identical, but wrong from evolveAllPhrases(): that only ever touches
+  // pool[p] (poolGenesis is a frozen Recall snapshot of how the phrase
+  // looked at its last reseed), so overwriting poolGenesis there would
+  // silently corrupt what Recall plays back and confuse the Drift
+  // indicator's poolType-vs-poolGenesisType divergence check.
+  void breakQuantizerCollapse(int p, bool alsoUpdateGenesis) {
+    const bool *quantSet = quantSetForPhrase(p);
+    int prevSemitone = -1;
+    for (int i = len - 1; i >= 0; i--) {
+      if (poolType[p][i] == STEP_NORMAL) {
+        quantizeToActiveNotes(pool[p][i], quantSet, &prevSemitone);
+        break;
+      }
+    }
+    for (int i = 0; i < len; i++) {
+      if (poolType[p][i] != STEP_NORMAL) continue;
+      int semitone;
+      quantizeToActiveNotes(pool[p][i], quantSet, &semitone);
+      if (semitone >= 0 && semitone == prevSemitone) {
+        for (int attempt = 0; attempt < 8 && semitone == prevSemitone; attempt++) {
+          pool[p][i] = musicalStep(pool[p][i], kMutationSigma * 2.f);
+          quantizeToActiveNotes(pool[p][i], quantSet, &semitone);
+        }
+        // 8 random nudges usually escape, but aren't guaranteed to - a
+        // scale with few active notes packed close together (or ordinary
+        // bad luck) can leave every attempt still landing back on
+        // prevSemitone, reported on real hardware as consecutive repeats
+        // surviving this fix. Falls back to deterministically placing on
+        // whichever active note (other than prevSemitone) is nearest the
+        // current value, so the collapse is *guaranteed* broken rather
+        // than left to the retries' luck - the only case this can't help
+        // is a single active note total, where a repeat is unavoidable.
+        if (semitone == prevSemitone) {
+          float semis = pool[p][i] * 12.f;
+          float baseOct = std::floor(semis / 12.f) * 12.f;
+          float best = 0.f, bestDist = 1e9f;
+          bool found = false;
+          for (int oct = -12; oct <= 12; oct += 12) {
+            for (int d = 0; d < 12; d++) {
+              if (!quantSet[d] || d == prevSemitone) continue;
+              float candidate = baseOct + oct + d;
+              float dist = std::abs(semis - candidate);
+              if (dist < bestDist) { bestDist = dist; best = candidate; found = true; }
+            }
+          }
+          if (found) {
+            pool[p][i] = clamp(best / 12.f, 0.f, 5.f);
+            semitone = ((int)best % 12 + 12) % 12;
+          }
+        }
+        if (alsoUpdateGenesis)
+          poolGenesis[p][i] = pool[p][i];
+      }
+      prevSemitone = semitone;
+    }
   }
 
   // Makes idx the currently-playing phrase and rolls its Recall check for
@@ -829,7 +862,7 @@ struct TheReelPeetEvo : Module {
           } else if (sub < kRestFraction + kTieFraction) {
             candidateType[p][i] = STEP_TIE;
           } else {
-            candidates[p][i] = mutateStep(candidates[p][i], p, i);
+            candidates[p][i] = mutateStep(candidates[p][i], p);
             candidateType[p][i] = STEP_NORMAL;
           }
         }
@@ -866,6 +899,13 @@ struct TheReelPeetEvo : Module {
           poolType[p][i] = candidateType[p][i];
         }
         closeLoopSeam(pool[p], p, poolType[p]);
+        // Same collapse reseedPhrase() guards against (two nearby raw
+        // values landing on the same quantized note) can just as easily
+        // reappear after ordinary crossover+mutation, not only at genesis -
+        // reported on real hardware recurring in a phrase that had already
+        // been playing/evolving a while, not just right after Run. Needs
+        // checking after every evolution round, not only once at reseed.
+        breakQuantizerCollapse(p, false);
         if (audiblyChanged)
           pendingDrift[p] = true;
       }
@@ -1403,16 +1443,15 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // Shared left/right columns for the whole Model group - button and
     // engine lights share the left column, "Model" and the engine names
     // share the right column, so everything lines up vertically.
-    // Shifted further left per feedback ("Experimental" was creeping past
-    // the box's right edge) - the box itself is already close to the
-    // lane's own left edge, so most of the extra room comes from
-    // tightening the light-to-text gap rather than moving the box more.
-    const float modelColL = laneXL - 11.f;
+    // Box+lights nudged right, text nudged left (tightening the gap
+    // between them) per feedback, now that the box itself is narrower and
+    // doesn't need as much internal spacing.
+    const float modelColL = laneXL - 9.5f;
     // Left-justified list reads better than centered - modelColR is now
     // the text's left edge, not its center.
-    const float modelColR = laneXL - 6.f;
+    const float modelColR = laneXL - 7.5f;
     const float modelLabelW = 26.f;
-    const float engineRowY[4] = {engineY + 7.f, engineY + 13.f, engineY + 19.f, engineY + 25.f};
+    const float engineRowY[3] = {engineY + 7.f, engineY + 13.f, engineY + 19.f};
     // Was 94, crowding the Rise/Fall labels right up against the output
     // jacks below with no breathing room - pulled back up closer to the
     // (now taller, 4-row) Model box, and the CV rows nudged down to
@@ -1512,8 +1551,14 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     // on top of them - sized to enclose the button+label row and all 3
     // engine rows with a small margin.
     auto *modelBox = new EvoGroupBox;
-    modelBox->box.pos = mm2px(Vec(laneXL - 14.f, engineY - 5.f));
-    modelBox->box.size = mm2px(Vec(30.f, 35.f));
+    // Left edge was 1.73mm from the lane's own left edge, right edge only
+    // 0.72mm from the lane's right edge - nudged left by the difference
+    // so both margins match, without moving the button/lights/text inside.
+    modelBox->box.pos = mm2px(Vec(laneXL - 13.f, engineY - 5.f));
+    // Shrunk from 35mm to 29mm tall (one row height less) after dropping
+    // the AI/GRU engine back down to 3 choices - same top position and
+    // bottom margin below the last row as before, just one row shorter.
+    modelBox->box.size = mm2px(Vec(26.f, 29.f));
     addChild(modelBox);
 
     addParam(createParamCentered<LEDButton>(mm2px(Vec(modelColL, engineY)), module, TheReelPeetEvo::ENGINE_PARAM));
@@ -1524,7 +1569,6 @@ struct TheReelPeetEvoWidget : ModuleWidget {
     addChild(createLightCentered<MediumLight<GreenLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_GAUSSIAN));
     addChild(createLightCentered<MediumLight<YellowLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_MARKOV])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_MARKOV));
     addChild(createLightCentered<MediumLight<RedLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_INTERVAL));
-    addChild(createLightCentered<MediumLight<BlueLight>>(mm2px(Vec(modelColL, engineRowY[TheReelPeetEvo::ENGINE_GRU])), module, TheReelPeetEvo::ENGINE_LIGHT + (int)TheReelPeetEvo::ENGINE_GRU));
 
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL - cvDX, riseFallY)), module, TheReelPeetEvo::RISE_PARAM));
     addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(laneXL + cvDX, riseFallY)), module, TheReelPeetEvo::FALL_PARAM));
@@ -1619,23 +1663,16 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       // "Model" sits beside its button, vertically centered on it (same
       // -2.5f box-top offset trick as the engine rows below, so the 5mm
       // label box centers its text on the button's own y). Engine names
-      // follow the same pattern, one per row, sharing modelColR. All
-      // left-justified (reads as a list, not centered captions), and
-      // "Model" bumped to 11pt (was 9pt) so it reads clearly as this
-      // group's header rather than just another row.
-      addLabel("Model", modelColR, engineY - 2.5f, modelLabelW, 11.f, true, true);
+      // follow the same pattern, one per row, sharing modelColR,
+      // left-justified (reads as a list, not centered captions). "Model"
+      // itself is centered over the whole box instead - a centered title
+      // above a left-justified list is the more familiar convention than
+      // matching the list's own alignment, and bumped to 11pt (was 9pt)
+      // so it reads clearly as this group's header.
+      addLabel("Model", laneXL + 0.5f, engineY - 2.5f, 26.f, 11.f, true, false);
       addLabel("Gaussian", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GAUSSIAN] - 2.5f, modelLabelW, 8.f, false, true);
       addLabel("Markov", modelColR, engineRowY[TheReelPeetEvo::ENGINE_MARKOV] - 2.5f, modelLabelW, 8.f, false, true);
       addLabel("Interval", modelColR, engineRowY[TheReelPeetEvo::ENGINE_INTERVAL] - 2.5f, modelLabelW, 8.f, false, true);
-      // "AI (Experimental)" - unlike Markov, this genuinely is a trained
-      // model (a small GRU, see gruStep/EvoGruWeights.h), so the label
-      // earns the term rather than overselling it. Spelled out in full
-      // (was "AI(exp)") now that the group's shifted left for the room;
-      // bolded since "AI" alone read ambiguously as "Al" at 8pt regular
-      // weight (capital I and lowercase l are near-identical strokes in
-      // this font at small sizes) - bolding is the cheapest attempt at
-      // disambiguating it before resorting to a different word entirely.
-      addLabel("AI (Experimental)", modelColR, engineRowY[TheReelPeetEvo::ENGINE_GRU] - 2.5f, modelLabelW, 8.f, true, true);
       addLabel("Rise", laneXL - cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("Fall", laneXL + cvDX, riseFallY + 3.f, dispW2, 8.f);
       addLabel("1v/O", laneXL - cvDX, outY + 3.5f, dispW2, 8.f);
