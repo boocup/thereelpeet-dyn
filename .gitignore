@@ -15,3 +15,5 @@
 /dist
 /patches
 res/Blank.svg.zip
+
+.claude/
