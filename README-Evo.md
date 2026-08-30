@@ -95,7 +95,7 @@ make install
 Requires the [MetaModule Plugin SDK](https://github.com/4ms/metamodule-plugin-sdk) and ARM GNU Toolchain 12.3.
 
 ```bash
-cmake -B build-mm -DCMAKE_TOOLCHAIN_FILE=../MyModule-metamodule/sdk/cmake/arm-toolchain.cmake
+cmake -B build-mm -DMETAMODULE_SDK_DIR=../metamodule-plugin-sdk
 cmake --build build-mm
 ```
 
