@@ -11,7 +11,7 @@ else()
         "Use static/prebuilt libc for MetaModule plugins" FORCE)
     set(METAMODULE_SDK_BUILD_PLUGIN_LIBC OFF CACHE BOOL
         "Build plugin-libc from source" FORCE)
-    set(METAMODULE_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../MyModule-metamodule/sdk")
+    set(METAMODULE_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../metamodule-plugin-sdk")
     message("METAMODULE_SDK_DIR set to default: ${METAMODULE_SDK_DIR}")
 endif()
 
