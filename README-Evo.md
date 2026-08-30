@@ -46,8 +46,10 @@ Scale quantization happens only at the moment a note is actually played — the 
 - **Recall light** — lit while that phrase is playing its original genesis version instead of its current evolved content.
 - **Drift light** — flashes once that phrase's own turn to play begins, if its content changed since it last played (not the instant the change happens in the background).
 
-### Quantizers (Left / Right)
-Two independent 12-note toggle grids — Left governs phrases 1 & 3, Right governs phrases 2 & 4 — laid out like a piano keyboard on its side. Light up notes to build a scale directly; there's no separate key/root knob, since C is always the first toggle. Leave a side fully off to pass pitch through unquantized. If only one side has any notes active, that side governs all 4 phrases.
+### Quantizers (Left / Right) — optional
+Two independent 12-note toggle grids — Left governs phrases 1 & 3, Right governs phrases 2 & 4 — laid out like a piano keyboard on its side. Light up notes to build a scale directly; there's no separate key/root knob, since C is always the first toggle. If only one side has any notes active, that side governs all 4 phrases.
+
+Using them is entirely optional. Leave both sides fully off and the **1V/Oct** output passes the underlying continuous-voltage genetics straight through, unquantized — this is the natural setup if you'd rather patch the output into a separate/external quantizer module (for a different scale algorithm, chord-aware quantizing, etc.) instead of the built-in one.
 
 ---
 
