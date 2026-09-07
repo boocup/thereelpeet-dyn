@@ -381,35 +381,21 @@ struct TheReelPeetWidget : ModuleWidget {
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(laneBX + cvDX, outY)), module, TheReelPeet::ENV_B_OUTPUT));
 
     // --- Displays ---
-    if (module) {
+    // dispW is needed by both the module-dependent displays below and the
+    // static "Dyn" labels - kept as a plain (non-gated) scope so the labels
+    // can be pulled out from under `if (module)` while still sharing it.
+    {
       const float dispW = 12.f;
       const float stepsDispY = 52.f;
       const float bpmDispY   = 73.f;
 
-      auto *lenADisplay = new LengthDisplay;
-      lenADisplay->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, stepsDispY));
-      lenADisplay->box.size = mm2px(Vec(dispW, 11.f));
-      lenADisplay->value = &module->lenA;
-      addChild(lenADisplay);
-
-      auto *lenBDisplay = new LengthDisplay;
-      lenBDisplay->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, stepsDispY));
-      lenBDisplay->box.size = mm2px(Vec(dispW, 11.f));
-      lenBDisplay->value = &module->lenB;
-      addChild(lenBDisplay);
-
-      auto *bpmDispA = new BPMDisplay();
-      bpmDispA->param = &module->params[TheReelPeet::BPM_A_PARAM];
-      bpmDispA->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, bpmDispY));
-      bpmDispA->box.size = mm2px(Vec(dispW, 11.f));
-      addChild(bpmDispA);
-
-      auto *bpmDispB = new BPMDisplay();
-      bpmDispB->param = &module->params[TheReelPeet::BPM_B_PARAM];
-      bpmDispB->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, bpmDispY));
-      bpmDispB->box.size = mm2px(Vec(dispW, 11.f));
-      addChild(bpmDispB);
-
+      // Pure static text, no module state involved - deliberately outside
+      // the `if (module)` block below (unlike the length/BPM displays,
+      // which genuinely can't show anything without a live module). VCV's
+      // library page and the "Add Module" browser both render this widget
+      // with module == nullptr, so gating a static label behind
+      // `if (module)` silently produces a blank, unlabeled panel preview
+      // everywhere outside an actual running patch.
       auto *dynLabelA = new StaticLabel;
       dynLabelA->text = "Dyn";
       dynLabelA->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, dynKnobY + 5.f));
@@ -421,6 +407,35 @@ struct TheReelPeetWidget : ModuleWidget {
       dynLabelB->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, dynKnobY + 5.f));
       dynLabelB->box.size = mm2px(Vec(dispW, 5.f));
       addChild(dynLabelB);
+
+      // These four genuinely need a live module - they read current
+      // Length/BPM values each frame, which have nothing to read without
+      // one.
+      if (module) {
+        auto *lenADisplay = new LengthDisplay;
+        lenADisplay->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, stepsDispY));
+        lenADisplay->box.size = mm2px(Vec(dispW, 11.f));
+        lenADisplay->value = &module->lenA;
+        addChild(lenADisplay);
+
+        auto *lenBDisplay = new LengthDisplay;
+        lenBDisplay->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, stepsDispY));
+        lenBDisplay->box.size = mm2px(Vec(dispW, 11.f));
+        lenBDisplay->value = &module->lenB;
+        addChild(lenBDisplay);
+
+        auto *bpmDispA = new BPMDisplay();
+        bpmDispA->param = &module->params[TheReelPeet::BPM_A_PARAM];
+        bpmDispA->box.pos = mm2px(Vec(laneAX - dispW * 0.5f, bpmDispY));
+        bpmDispA->box.size = mm2px(Vec(dispW, 11.f));
+        addChild(bpmDispA);
+
+        auto *bpmDispB = new BPMDisplay();
+        bpmDispB->param = &module->params[TheReelPeet::BPM_B_PARAM];
+        bpmDispB->box.pos = mm2px(Vec(laneBX - dispW * 0.5f, bpmDispY));
+        bpmDispB->box.size = mm2px(Vec(dispW, 11.f));
+        addChild(bpmDispB);
+      }
     }
   }
 };

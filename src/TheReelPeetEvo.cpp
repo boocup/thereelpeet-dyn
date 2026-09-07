@@ -944,11 +944,29 @@ struct TheReelPeetEvo : Module {
     // decay loop below), once this step's played note (if any) is known -
     // just track on/off state here (quantSetForPhrase re-derives the
     // anyActive flags itself when a note is actually read below).
+    bool quantChanged = false;
     for (int i = 0; i < 12; i++) {
-      if (noteTrigL[i].process(params[NOTE_PARAM_L + i].getValue()))
+      if (noteTrigL[i].process(params[NOTE_PARAM_L + i].getValue())) {
         noteActiveL[i] = !noteActiveL[i];
-      if (noteTrigR[i].process(params[NOTE_PARAM_R + i].getValue()))
+        quantChanged = true;
+      }
+      if (noteTrigR[i].process(params[NOTE_PARAM_R + i].getValue())) {
         noteActiveR[i] = !noteActiveR[i];
+        quantChanged = true;
+      }
+    }
+    // breakQuantizerCollapse only ever ran when a phrase's pool *content*
+    // changed (reseed or evolution round) - it never re-checked when the
+    // *scale* itself changed instead. Two raw values that quantized
+    // differently under the old scale can collide under a newly-toggled
+    // one, with nothing catching it until that phrase's content happened
+    // to change anyway - reported on hardware as Markov-engine repeats
+    // surviving the original fix. Re-validate every phrase's existing
+    // content against whichever scale is active now, right when a toggle
+    // actually happens (not every frame - only on an edge).
+    if (quantChanged) {
+      for (int p = 0; p < 4; p++)
+        breakQuantizerCollapse(p, false);
     }
 
     if (justStarted)
@@ -1636,7 +1654,15 @@ struct TheReelPeetEvoWidget : ModuleWidget {
       addChild(createLightCentered<MediumLight<RedLight>>(mm2px(Vec(ctrlX1, rowBY[row])), module, TheReelPeetEvo::DRIFT_LIGHT + p));
     }
 
-    if (module) {
+    {
+      // Deliberately NOT gated on `module` (unlike the length readout
+      // below, which genuinely can't exist without one) - these are pure
+      // static text/decoration, nothing here reads module state. VCV's
+      // library page and the "Add Module" browser both render this widget
+      // with module == nullptr, so gating labels behind `if (module)`
+      // silently produced blank, unlabeled panel previews everywhere
+      // outside an actual running patch - reported as "no labels at all"
+      // on both the VCV Rack library page and 4ms's plugin listing.
       const float dispW = 12.f;
       const float dispW2 = 8.f;
 
@@ -1694,12 +1720,15 @@ struct TheReelPeetEvoWidget : ModuleWidget {
         addLabel("Drift", ctrlX1, rowBY[row] + 2.5f, dispW, 8.f);
       }
 
-      auto *lenDisplay = new EvoLengthDisplay;
-      lenDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, dispY));
-      lenDisplay->box.size = mm2px(Vec(dispW, 11.f));
-      lenDisplay->value = &module->len;
-      addChild(lenDisplay);
-
+      // This one genuinely needs a live module - it reads the current
+      // Length value each frame, which has nothing to read without one.
+      if (module) {
+        auto *lenDisplay = new EvoLengthDisplay;
+        lenDisplay->box.pos = mm2px(Vec(laneXL - dispW * 0.5f, dispY));
+        lenDisplay->box.size = mm2px(Vec(dispW, 11.f));
+        lenDisplay->value = &module->len;
+        addChild(lenDisplay);
+      }
     }
   }
 };

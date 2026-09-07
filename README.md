@@ -6,7 +6,7 @@
 
 Each lane produces a randomized 1V/Oct pitch sequence with an independent Rise/Fall envelope, making it well-suited as a self-contained melodic voice or modulation source.
 
-TheReelPeet runs natively on both **VCV Rack 2** and the **4ms MetaModule** from a single codebase.
+TheReelPeet runs natively on both **VCV Rack 2** and the **4ms MetaModule** from a single codebase, sharing a plugin package with **TheReelPeet-Evo** — a single-lane genetic-algorithm sequencer. See [README-Evo.md](./README-Evo.md) for that module's own documentation.
 
 TheReelPeet is licensed under the [MIT license](./LICENSE).
 
@@ -48,7 +48,7 @@ The core personality control. Turning clockwise increases the probability of **n
 - A new note will never fire until the current envelope has fully completed (A-166 style gate logic).
 
 ### Rise / Fall
-Small knobs that set the attack (0–2s) and decay (0–4s) time of the per-note envelope. The envelope output follows an AR shape, with a sustain phase held for the full duration of a hold.
+Small knobs that set the attack (0–4s) and decay (0–4s) time of the per-note envelope. The envelope output follows an AR shape, with a sustain phase held for the full duration of a hold.
 
 ### Outputs
 - **1V/Oct** — Current pitch CV. Freezes at the last fired note value until the envelope completes.
