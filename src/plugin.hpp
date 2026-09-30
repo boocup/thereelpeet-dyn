@@ -9,3 +9,4 @@ extern Plugin* pluginInstance;
 
 extern Model* modelTheReelPeet;
 extern Model* modelTheReelPeetEvo;
+extern Model* modelTheReelPeetUndertow;

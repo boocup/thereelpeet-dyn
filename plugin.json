@@ -28,6 +28,13 @@
       "manualUrl": "https://github.com/boocup/thereelpeet-dyn/blob/main/README-Evo.md",
       "panel": "res/TheReelPeetEvo.svg",
       "tags": ["Sequencer", "Random", "Envelope generator"]
+    },
+    {
+      "slug": "thereelpeet-undertow",
+      "name": "TheReelPeet-Undertow",
+      "description": "Two-lane audio phrasing module. Built-in VCAs bring voices in and out in long, breathing phrases, following an evolving form that repeats with change. Per-lane envelope outputs.",
+      "panel": "res/TheReelPeetUndertow.svg",
+      "tags": ["Utility", "Random", "VCA"]
     }
   ]
 }

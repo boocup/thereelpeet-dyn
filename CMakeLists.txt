@@ -23,6 +23,7 @@ add_library(thereelpeetseqmm STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/plugin.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/TheReelPeet.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/TheReelPeetEvo.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/TheReelPeetUndertow.cpp
 )
 
 target_include_directories(thereelpeetseqmm PRIVATE

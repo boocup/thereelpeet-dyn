@@ -11,6 +11,7 @@ void init(Plugin *p) {
   // load and display in the module browser.
   p->addModel(modelTheReelPeet);
   p->addModel(modelTheReelPeetEvo);
+  p->addModel(modelTheReelPeetUndertow);
 
   // Other plugin initialization may go here. But a better strategy is to
   // do other initialization on-demand in the module constructor.
