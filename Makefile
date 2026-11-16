@@ -1,4 +1,4 @@
-RACK_DIR ?= /Users/peterbuchhop/vcv-dev/Rack
+RACK_DIR ?= $(HOME)/vcv-dev/Rack
 
 FLAGS +=
 
